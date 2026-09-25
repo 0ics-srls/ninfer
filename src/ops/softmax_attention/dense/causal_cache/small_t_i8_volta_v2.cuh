@@ -296,15 +296,27 @@ __launch_bounds__(kCausalSmallTI8VoltaV2Warps * 32, 1) __global__
             }
         }
     };
-    auto dequant8 = [](int2 raw, float sc) {
-        const std::int8_t* c = reinterpret_cast<const std::int8_t*>(&raw);
-        __half2 packed[4];
+    // int8 -> fp16 without I2F: Volta's integer->float conversions issue at quarter rate and
+    // were ~half of this kernel's per-tile time. Bias each signed byte to unsigned (xor 0x80),
+    // splice it into the mantissa of fp16 1024.0 (0x64xx = 1024 + byte), subtract 1152 (exact),
+    // then multiply by the fp16 scale. fp16*fp16 is exact in fp32, so this rounds identically to
+    // the reference float(c) * scale -> half path.
+    auto dequant8 = [](int2 raw, half sc) {
+        const __half2 scale2 = __half2half2(sc);
+        const __half2 bias2  = __float2half2_rn(1152.0f);
+        const unsigned lo = static_cast<unsigned>(raw.x) ^ 0x80808080u;
+        const unsigned hi = static_cast<unsigned>(raw.y) ^ 0x80808080u;
+        unsigned h[4];
+        h[0] = __byte_perm(lo, 0x64646464u, 0x5150);
+        h[1] = __byte_perm(lo, 0x64646464u, 0x5352);
+        h[2] = __byte_perm(hi, 0x64646464u, 0x5150);
+        h[3] = __byte_perm(hi, 0x64646464u, 0x5352);
+        __half2 out[4];
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
-            packed[j] = __floats2half2_rn(static_cast<float>(c[2 * j]) * sc,
-                                          static_cast<float>(c[2 * j + 1]) * sc);
+            out[j] = __hmul2(__hsub2(*reinterpret_cast<const __half2*>(&h[j]), bias2), scale2);
         }
-        return *reinterpret_cast<const int4*>(packed);
+        return *reinterpret_cast<const int4*>(out);
     };
 
     load_tile(0);
@@ -317,8 +329,8 @@ __launch_bounds__(kCausalSmallTI8VoltaV2Warps * 32, 1) __global__
             const int chunk = tid + i * Threads;
             const int key_l = chunk / (D / 8);
             const int d     = (chunk - key_l * (D / 8)) * 8;
-            store_vec(&k_s[key_l * Stride + d], dequant8(k_codes[i], __half2float(k_scales[i])));
-            store_vec(&v_s[key_l * Stride + d], dequant8(v_codes[i], __half2float(v_scales[i])));
+            store_vec(&k_s[key_l * Stride + d], dequant8(k_codes[i], k_scales[i]));
+            store_vec(&v_s[key_l * Stride + d], dequant8(v_codes[i], v_scales[i]));
         }
         if (kb + 1 < key_blocks) { load_tile(kb + 1); }
         __syncthreads(); // (1) K/V tile staged
