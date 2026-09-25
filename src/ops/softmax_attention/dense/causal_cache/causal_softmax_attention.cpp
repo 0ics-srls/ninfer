@@ -38,7 +38,8 @@ std::int32_t causal_attention_chunk_tokens(std::int32_t q_heads, std::int32_t wi
 void require_causal_geometry(AttentionHeadGeometry geometry, const char* op) {
     if (!valid_attention_head_geometry(geometry) || geometry.head_dim != kHeadDim ||
         !((geometry.query_heads == 24 && geometry.kv_heads == 4) ||
-          (geometry.query_heads == 16 && geometry.kv_heads == 2))) {
+          (geometry.query_heads == 16 && geometry.kv_heads == 2) ||
+          (geometry.query_heads == 12 && geometry.kv_heads == 2))) {
         throw std::invalid_argument(std::string(op) + ": unsupported head geometry");
     }
 }
@@ -275,7 +276,8 @@ struct SmallTWorkspace {
 bool volta_flash_route_possible(std::int32_t q_heads, std::int32_t width,
                                 std::int32_t batch_size, KvCacheStorage cache_storage) {
     const bool supported_geometry = q_heads == CausalD256H24Kv4::QHeads ||
-                                    q_heads == CausalD256H16Kv2::QHeads;
+                                    q_heads == CausalD256H16Kv2::QHeads ||
+                                    q_heads == CausalD256H12Kv2::QHeads;
     return supported_geometry && batch_size == 1 &&
            (cache_storage == KvCacheStorage::BFloat16 ||
             cache_storage == KvCacheStorage::Int8Group64) &&
@@ -298,7 +300,9 @@ VoltaFlashWorkspace allocate_volta_flash_workspace(Allocator& workspace,
                                                    CausalAttentionExecutionEnvelope envelope) {
     const std::int32_t kv_heads = q_heads == CausalD256H24Kv4::QHeads
                                       ? CausalD256H24Kv4::KVHeads
-                                      : CausalD256H16Kv2::KVHeads;
+                                      : (q_heads == CausalD256H12Kv2::QHeads
+                                             ? CausalD256H12Kv2::KVHeads
+                                             : CausalD256H16Kv2::KVHeads);
     const auto visible          = static_cast<std::int32_t>(envelope.max_visible_keys);
     const std::int32_t n_kv =
         ((visible + detail::kVoltaFlashKeyPad - 1) / detail::kVoltaFlashKeyPad) *

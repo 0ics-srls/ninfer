@@ -113,6 +113,7 @@ struct Geometry {
 constexpr Geometry kGeometries[] = {
     {"d256-h24-kv4", 24, 4},
     {"d256-h16-kv2", 16, 2},
+    {"d256-h12-kv2", 12, 2}, // TP2 rank shard of d256-h24-kv4
 };
 
 ops::AttentionHeadGeometry op_geometry(const Geometry& geometry) {
@@ -2310,6 +2311,7 @@ int run_geometry(const Geometry& geometry) {
 int run_fp8_cases() {
     int failures = 0;
     for (const Geometry& geometry : kGeometries) {
+        if (geometry.q_heads == 12) { continue; } // TP2 shard: BF16/INT8 KV only
         failures += run_a1_case(geometry, KvCacheStorage::Fp8E4M3Row256, {65, 63, 192, 601u},
                                 MappingPattern::Fragmented);
         failures += run_a3_case(geometry, KvCacheStorage::Fp8E4M3Row256, {65, 63, 192, 602u},
@@ -2331,6 +2333,7 @@ int run_fp8_cases() {
 int run_nvfp4_cases() {
     int failures = 0;
     for (const Geometry& geometry : kGeometries) {
+        if (geometry.q_heads == 12) { continue; } // TP2 shard: BF16/INT8 KV only
         failures += run_a1_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 0, 1, 701u},
                                 MappingPattern::Identity);
         failures += run_a3_case(geometry, KvCacheStorage::Nvfp4Group16, {1, 64, 65, 702u},
@@ -2376,6 +2379,7 @@ int run_nvfp4_cases() {
 int run_k8v4_cases() {
     int failures = 0;
     for (const Geometry& geometry : kGeometries) {
+        if (geometry.q_heads == 12) { continue; } // TP2 shard: BF16/INT8 KV only
         failures += run_a1_case(geometry, KvCacheStorage::Fp8KeyNvfp4Value, {1, 0, 1, 801u},
                                 MappingPattern::Identity);
         failures += run_a3_case(geometry, KvCacheStorage::Fp8KeyNvfp4Value, {1, 64, 65, 802u},

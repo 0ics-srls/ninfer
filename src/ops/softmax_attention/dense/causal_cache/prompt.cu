@@ -102,6 +102,11 @@ void causal_attention_prompt_attention_launch(const Tensor& q, const Tensor& pos
         return;
     }
     const PagedKVDirectMetadata metadata{static_cast<const std::int32_t*>(cache.block_table.data)};
+    if (q.ne[1] == CausalD256H12Kv2::QHeads) {
+        causal_attention_prompt_attention_launch_for<CausalD256H12Kv2>(q, positions, scale, cache,
+                                                                       metadata, out, stream);
+        return;
+    }
     if (q.ne[1] == CausalD256H24Kv4::QHeads) {
         causal_attention_prompt_attention_launch_for<CausalD256H24Kv4>(q, positions, scale, cache,
                                                                        metadata, out, stream);
@@ -144,6 +149,11 @@ void causal_attention_prompt_launch(const Tensor& q, const Tensor& k, const Tens
             .table_rows   = static_cast<const std::int32_t*>(table_row.data),
             .table_stride = cache.block_tables.ne[0],
         };
+        if (q_row.ne[1] == CausalD256H12Kv2::QHeads) {
+            causal_attention_prompt_attention_launch_for<CausalD256H12Kv2>(
+                q_row, positions_row, scale, cache, metadata, out_row, stream);
+            return;
+        }
         if (q_row.ne[1] == CausalD256H24Kv4::QHeads) {
             causal_attention_prompt_attention_launch_for<CausalD256H24Kv4>(
                 q_row, positions_row, scale, cache, metadata, out_row, stream);
@@ -178,6 +188,11 @@ void causal_attention_prompt_launch(const Tensor& q, const Tensor& k, const Tens
             .table_rows   = static_cast<const std::int32_t*>(table_rows.data),
             .table_stride = cache.block_tables.ne[0],
         };
+        if (q.ne[1] == CausalD256H12Kv2::QHeads) {
+            causal_attention_prompt_attention_launch_for<CausalD256H12Kv2>(
+                q, positions, scale, cache, metadata, out, stream);
+            return;
+        }
         if (q.ne[1] == CausalD256H24Kv4::QHeads) {
             causal_attention_prompt_attention_launch_for<CausalD256H24Kv4>(
                 q, positions, scale, cache, metadata, out, stream);
