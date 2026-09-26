@@ -324,17 +324,15 @@ void nvfp4_volta_qpn_prepacked_kernel(const std::uint8_t* __restrict__ codes,
         }
     }
 
-    for (int group = g0; group < gend; ++group) {
-        const std::int64_t packed_index = tile_base + static_cast<std::int64_t>(group) * 32;
-        const uint2 q2 = __ldg(reinterpret_cast<const uint2*>(codes + packed_index * 8));
-        const half2 sc2 = __hmul2(nvfp4_decode_e4m3_scale(scales[packed_index]), divisor2);
+    auto group_body = [&](int grp, uint2 q2, std::uint8_t s8) {
+        const half2 sc2 = __hmul2(nvfp4_decode_e4m3_scale(s8), divisor2);
         half2 b[8];
         nvfp4_decode_e2m1_quad(q2.x, rebias, *reinterpret_cast<half2(*)[4]>(&b[0]));
         nvfp4_decode_e2m1_quad(q2.y, rebias, *reinterpret_cast<half2(*)[4]>(&b[4]));
 #pragma unroll
         for (int j = 0; j < 8; ++j) { b[j] = __hmul2(b[j], sc2); }
         const unsigned* B = reinterpret_cast<const unsigned*>(b);
-        const int kbase   = group * S::kGroupK;
+        const int kbase   = grp * S::kGroupK;
 
 #pragma unroll
         for (int tile = 0; tile < kTiles; ++tile) {
@@ -371,6 +369,28 @@ void nvfp4_volta_qpn_prepacked_kernel(const std::uint8_t* __restrict__ codes,
             volta_mma_qp_n(c[tile][2 % NACC], A[4], A[5], B[4], B[5]);
             volta_mma_qp_n(c[tile][3 % NACC], A[6], A[7], B[6], B[7]);
         }
+    };
+    // Software pipelining: each lane reads only 8 code bytes + 1 scale byte per group, so issuing
+    // eight groups' loads before decoding any of them is what keeps enough bytes in flight when K
+    // per warp is short (TP2 down 5120x8704: 58.4 -> 54.5 us; gate/up half 47.9 -> 43.6 us; single
+    // card 5120x17408 96.0 -> 88.4 us, all T=4).
+    constexpr int kUnroll = 8;
+    int group = g0;
+    for (; group + kUnroll <= gend; group += kUnroll) {
+        uint2 qq[kUnroll];
+        std::uint8_t ss[kUnroll];
+#pragma unroll
+        for (int u = 0; u < kUnroll; ++u) {
+            const std::int64_t pi = tile_base + static_cast<std::int64_t>(group + u) * 32;
+            qq[u] = __ldg(reinterpret_cast<const uint2*>(codes + pi * 8));
+            ss[u] = __ldg(scales + pi);
+        }
+#pragma unroll
+        for (int u = 0; u < kUnroll; ++u) { group_body(group + u, qq[u], ss[u]); }
+    }
+    for (; group < gend; ++group) {
+        const std::int64_t pi = tile_base + static_cast<std::int64_t>(group) * 32;
+        group_body(group, __ldg(reinterpret_cast<const uint2*>(codes + pi * 8)), __ldg(scales + pi));
     }
 
 #pragma unroll

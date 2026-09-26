@@ -164,7 +164,7 @@ enum class Fp8Problem : std::uint8_t {
 inline constexpr bool is_fp8_tp2_half_problem(std::int32_t output_rows, std::int32_t input_rows) {
     return (output_rows == 7168 && input_rows == 5120) || (output_rows == 8192 && input_rows == 5120) ||
            (output_rows == 17408 && input_rows == 5120) || (output_rows == 5120 && input_rows == 3072) ||
-           (output_rows == 5120 && input_rows == 8704);
+           (output_rows == 5120 && input_rows == 8704) || (output_rows == 124160 && input_rows == 5120);
 }
 inline constexpr std::int32_t fp8_tp2_full_output_rows(std::int32_t output_rows, std::int32_t input_rows) {
     return input_rows == 5120 ? output_rows * 2 : output_rows;

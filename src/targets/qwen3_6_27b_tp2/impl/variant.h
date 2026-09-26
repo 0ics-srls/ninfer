@@ -84,6 +84,9 @@ struct Variant {
         qwen3_6::TextPhase phase, WorkspaceArena& workspace, cudaStream_t stream);
     // TP2: residual += sum over ranks of a row-parallel partial (see tp2_comm.h).
     static void tp_combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream);
+    // Vocabulary-sharded output/draft head (see tp2::head_linear); false = run it whole.
+    static bool tp_head_linear(const Tensor& hidden, const Weight& head, Tensor& out,
+                               cudaStream_t stream);
     static void gdn_output_projection(const Tensor& hidden, const Weight& weight, Tensor& residual,
                                       qwen3_6::TextPhase phase, WorkspaceArena& workspace,
                                       cudaStream_t stream);

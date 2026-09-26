@@ -69,6 +69,15 @@ inline void debug_dump_last_column(const Tensor& x, int layer, const char* stage
     if (FILE* f = std::fopen(path, "wb")) { std::fwrite(host.data(), 1, bytes, f); std::fclose(f); }
 }
 
+// Output/draft heads: a tensor-parallel variant may compute them vocabulary-sharded.
+template <class V>
+void output_head_linear(const Tensor& hidden, const Weight& head, Tensor& out, cudaStream_t stream) {
+    if constexpr (requires { V::tp_head_linear(hidden, head, out, stream); }) {
+        if (V::tp_head_linear(hidden, head, out, stream)) { return; }
+    }
+    ops::linear(hidden, head, out, stream);
+}
+
 template <class V>
 void mtp_output_residual_add(const Tensor& o, Tensor& residual, cudaStream_t stream) {
     if constexpr (requires { V::tp_combine_partial(o, residual, stream); }) {
@@ -600,13 +609,13 @@ void TextContext::proposal_argmax(const Tensor& hidden, Tensor& logits, Tensor& 
                                      static_cast<std::uint64_t>(T));
     if (proposal_head_ != nullptr) {
         Tensor proposal_logits = work_.alloc(DType::BF16, {proposal_head_n_, T});
-        ops::linear(hidden, *proposal_head_, proposal_logits, ctx_.stream);
+        output_head_linear<Variant>(hidden, *proposal_head_, proposal_logits, ctx_.stream);
         ops::argmax(proposal_logits, proposal_tokens, proposal_head_n_, ctx_.stream);
         ops::proposal_remap_token_ids(proposal_tokens, proposal_head_ids_, proposal_head_n_,
                                       ctx_.stream);
     } else {
         Tensor output_logits = matrix_window(logits, T);
-        ops::linear(hidden, *lm_head_, output_logits, ctx_.stream);
+        output_head_linear<Variant>(hidden, *lm_head_, output_logits, ctx_.stream);
         ops::argmax(output_logits, proposal_tokens, kCfg.token_domain, ctx_.stream);
     }
 }
@@ -719,7 +728,7 @@ void TextContext::ordinary_decode_batch(const Tensor& ids, const Tensor& cache_p
         NullTap tap;
         run_layers(x, Phase::Verify, tap);
         ops::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, hidden, stream);
-        ops::linear(hidden, *lm_head_, logits, stream);
+        output_head_linear<Variant>(hidden, *lm_head_, logits, stream);
     }
     work_.reset();
 }
@@ -779,7 +788,7 @@ void TextContext::target_verify_batch_impl(const Tensor& ids, const Tensor& cach
         Tensor flat_logits = logits.view({kCfg.vocab, columns});
         Tensor flat_tokens = target_tokens.view({columns});
         ops::rmsnorm(x, *final_norm_, kCfg.rms_eps, true, flat_hidden, stream);
-        ops::linear(flat_hidden, *lm_head_, flat_logits, stream);
+        output_head_linear<Variant>(flat_hidden, *lm_head_, flat_logits, stream);
         ops::argmax(flat_logits, flat_tokens, kCfg.token_domain, stream);
     }
     work_.reset();
@@ -1249,7 +1258,7 @@ TextContext::prefill_impl(std::span<const int> ids, const TextPrefill* text_pref
             if (is_last) {
                 Tensor last_xf = xf.slice(1, len - 1, 1);
                 Tensor logits  = matrix_window(io_.logits, 1);
-                ops::linear(last_xf, *lm_head_, logits, s);
+                output_head_linear<Variant>(last_xf, *lm_head_, logits, s);
                 // Set io_.pos to the bonus token's absolute position (base + T) before picking so
                 // the sampler RNG is keyed by it (prefill purpose keeps it distinct from the first
                 // decode step, which reuses the same io_.pos).

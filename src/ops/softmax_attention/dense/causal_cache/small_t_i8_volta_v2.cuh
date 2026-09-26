@@ -22,6 +22,27 @@
 
 namespace ninfer::ops {
 
+// P x V with fp32 accumulation straight into the output accumulator (D layout). Replaces an fp16
+// mma per 8-key group followed by 8 cvt + 8 FADD per thread: the conversion/adds were ~10% of
+// the kernel at 186K, and fp32 accumulation is also the more accurate of the two.
+__device__ __forceinline__ void causal_i8_v2_mma_pv_f32(float (&d)[8], const half2 (&p)[4],
+                                                        const half2 (&v)[4]) {
+    const int* Pxi = reinterpret_cast<const int*>(p);
+    const int* Vxi = reinterpret_cast<const int*>(v);
+    asm volatile("mma.sync.aligned.m8n8k4.row.row.f32.f16.f16.f32 "
+                 "{%0, %1, %2, %3, %4, %5, %6, %7}, {%8, %9}, {%10, %11}, "
+                 "{%0, %1, %2, %3, %4, %5, %6, %7};"
+                 : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]),
+                   "+f"(d[6]), "+f"(d[7])
+                 : "r"(Pxi[0]), "r"(Pxi[1]), "r"(Vxi[0]), "r"(Vxi[1]));
+    asm volatile("mma.sync.aligned.m8n8k4.row.row.f32.f16.f16.f32 "
+                 "{%0, %1, %2, %3, %4, %5, %6, %7}, {%8, %9}, {%10, %11}, "
+                 "{%0, %1, %2, %3, %4, %5, %6, %7};"
+                 : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]),
+                   "+f"(d[6]), "+f"(d[7])
+                 : "r"(Pxi[2]), "r"(Pxi[3]), "r"(Vxi[2]), "r"(Vxi[3]));
+}
+
 inline constexpr int kCausalSmallTI8VoltaV2Warps   = 8;
 inline constexpr int kCausalSmallTI8VoltaV2Bc      = 64;
 inline constexpr int kCausalSmallTI8VoltaV2Stride  = kCausalHeadDim + 8;
@@ -267,11 +288,31 @@ __launch_bounds__(kCausalSmallTI8VoltaV2Warps * 32, 1) __global__
     // tensor-core work of a single resident CTA.
     constexpr int ChunksPerThread = Bc * (D / 8) / Threads; // 8
     static_assert(Bc * (D / 8) % Threads == 0);
+    static_assert(Bc == kPagedKVPageSize && Threads == 256 && D / 8 == 32,
+                  "fast tile load assumes one page per tile and key = warp + 8i");
     int2 k_codes[ChunksPerThread], v_codes[ChunksPerThread];
     half k_scales[ChunksPerThread], v_scales[ChunksPerThread];
     auto load_tile = [&](int kb) {
         const int k0   = first_tile + kb * Bc;
         const int page = physical_pages_s[(k0 >> kPagedKVPageShift) - first_page];
+        // Interior tile: a 64-key tile is exactly one page, and thread tid owns key (warp + 8i)
+        // and columns lane*8..+7, so every address is the page base plus a constant.
+        if (k0 >= split_start && k0 + Bc <= split_end) {
+            const std::int64_t code_base =
+                paged_kv_page_head_offset<kKVCacheInt8HeadDim, Geometry::KVHeads>(page, kv_head) +
+                warp * kKVCacheInt8HeadDim + lane * 8;
+            const std::int64_t scale_base =
+                paged_kv_page_head_offset<kKVCacheInt8Groups, Geometry::KVHeads>(page, kv_head) +
+                warp * kKVCacheInt8Groups + (lane * 8) / kKVCacheInt8Group;
+#pragma unroll
+            for (int i = 0; i < ChunksPerThread; ++i) {
+                k_codes[i]  = load_vec<int2>(cache_k_i8 + code_base + i * 8 * kKVCacheInt8HeadDim);
+                v_codes[i]  = load_vec<int2>(cache_v_i8 + code_base + i * 8 * kKVCacheInt8HeadDim);
+                k_scales[i] = cache_k_scale[scale_base + i * 8 * kKVCacheInt8Groups];
+                v_scales[i] = cache_v_scale[scale_base + i * 8 * kKVCacheInt8Groups];
+            }
+            return;
+        }
 #pragma unroll
         for (int i = 0; i < ChunksPerThread; ++i) {
             const int chunk = tid + i * Threads;
@@ -399,16 +440,17 @@ __launch_bounds__(kCausalSmallTI8VoltaV2Warps * 32, 1) __global__
         __syncthreads(); // (3) full 32x64 P tile visible; red_s free again
 
         // ---- PV: this warp's 32 output columns over all 64 keys. ----
-        const float alpha = ((lane & 2) == 0) ? alpha_lo : alpha_hi;
+        // acc_f is in the mma D layout: element i belongs to row r_lo when (i & 2) == 0.
 #pragma unroll
         for (int c = 0; c < DChunksLocal; ++c) {
 #pragma unroll
-            for (int i = 0; i < 8; ++i) { acc_f[c][i] *= alpha; }
+            for (int i = 0; i < 8; ++i) { acc_f[c][i] *= ((i & 2) == 0) ? alpha_lo : alpha_hi; }
         }
 #pragma unroll
         for (int g = 0; g < KeyGroups; ++g) {
             half2 p[4];
-            volta_load_qp(p, reinterpret_cast<const half2*>(&p_s[g * 8]), PStride / 2);
+            *reinterpret_cast<int4*>(p) =
+                *reinterpret_cast<const int4*>(&p_s[lane * PStride + g * 8]);
 #pragma unroll
             for (int c = 0; c < DChunksLocal; ++c) {
                 half2 vf[4];
@@ -416,14 +458,7 @@ __launch_bounds__(kCausalSmallTI8VoltaV2Warps * 32, 1) __global__
                              reinterpret_cast<const half2*>(
                                  &v_s[g * 8 * Stride + warp * DSlice + c * 8]),
                              Stride / 2);
-                half2 pv[4] = {{0, 0}, {0, 0}, {0, 0}, {0, 0}};
-                volta_mma_pv(pv, p, vf);
-#pragma unroll
-                for (int n = 0; n < 4; ++n) {
-                    const float2 contrib = __half22float2(pv[n]);
-                    acc_f[c][2 * n + 0] += contrib.x;
-                    acc_f[c][2 * n + 1] += contrib.y;
-                }
+                causal_i8_v2_mma_pv_f32(acc_f[c], p, vf);
             }
         }
         __syncthreads(); // (4) k_s/v_s/p_s may be overwritten by the next tile
@@ -446,14 +481,21 @@ __launch_bounds__(kCausalSmallTI8VoltaV2Warps * 32, 1) __global__
                 partial_m[causal_partial_stat_index<Geometry>(q_head, token, split, tokens)] = own_m;
                 partial_l[causal_partial_stat_index<Geometry>(q_head, token, split, tokens)] = own_l;
             }
+        }
+    }
+    // acc_f is in the mma D layout (row volta_d_get_i(i), column volta_d_get_j(i) of the chunk).
 #pragma unroll
-            for (int c = 0; c < DChunksLocal; ++c) {
-                const int d = warp * DSlice + c * 8;
-                const std::int64_t dst =
-                    causal_partial_acc_index<Geometry>(q_head, d, token, split, tokens);
-                store_vec(&partial_acc[dst], *reinterpret_cast<const int4*>(&acc_f[c][0]));
-                store_vec(&partial_acc[dst + 4], *reinterpret_cast<const int4*>(&acc_f[c][4]));
-            }
+    for (int c = 0; c < DChunksLocal; ++c) {
+#pragma unroll
+        for (int i = 0; i < 8; ++i) {
+            const int r = volta_d_get_i(i);
+            if (r >= row_count) { continue; }
+            int qh = 0;
+            int tk = 0;
+            causal_small_t_tc_row_to_qt<Geometry>(r, tokens, kv_head, qh, tk);
+            if (!causal_valid_q_head<Geometry>(kv_head, qh)) { continue; }
+            const int d = warp * DSlice + c * 8 + volta_d_get_j(i);
+            partial_acc[causal_partial_acc_index<Geometry>(qh, d, tk, split, tokens)] = acc_f[c][i];
         }
     }
 #endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700

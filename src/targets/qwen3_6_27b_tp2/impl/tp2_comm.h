@@ -27,4 +27,9 @@ void allreduce(Tensor& residual, cudaStream_t stream);
 // residual with its partial, then one all-reduce.
 void combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream);
 
+// Vocabulary-sharded output head: this rank computes rows [rank*N/2, (rank+1)*N/2) of
+// hidden x head^T and both ranks end with the full [N, T] out (bit-identical on both ranks).
+// Returns false when the head/shape is not shardable here; the caller then runs it whole.
+bool head_linear(const Tensor& hidden, const Weight& head, Tensor& out, cudaStream_t stream);
+
 } // namespace ninfer::targets::qwen3_6_27b_tp2::detail::tp2

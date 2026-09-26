@@ -366,6 +366,11 @@ void Variant::tp_combine_partial(const Tensor& partial, Tensor& residual, cudaSt
     tp2::combine_partial(partial, residual, stream);
 }
 
+bool Variant::tp_head_linear(const Tensor& hidden, const Weight& head, Tensor& out,
+                             cudaStream_t stream) {
+    return tp2::head_linear(hidden, head, out, stream);
+}
+
 std::size_t Variant::mtp_attention_projection_workspace_capacity_bytes(std::int32_t first,
                                                                        std::int32_t last) {
     validate_token_interval(first, last);
