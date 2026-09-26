@@ -13,7 +13,7 @@ Qwen3.8-27B on Tesla V100s: rewritten sm70 attention kernels + N-GPU tensor para
 | 8K code / Chinese, decode | 79 / 58 | 97 / 73 | 140 / 106 |
 | 186K first-token latency | 455 s | 379 s | 250 s |
 
-Decode numbers at 186K/193K are the mean of 4 seeds × 1024 generated tokens on one fixed prompt; 8K numbers are single 256-token runs. Quality: 237/300 on our public [model-evaluation](https://github.com/huangserva/model-evaluation) core-300 set versus 245 (llama.cpp Q4_K_M) and 238 (Q8_0) on a 4090, differences within noise (paired McNemar p=0.20 / p=1.0).
+Head-to-head with one RTX 4090 48G (same prompts, same settings; 4090 runs stock NInfer with groupwise-int weights): decode is on par or slightly faster on the two V100s at every context (256K code 94.7 vs 80.9 tok/s, Chinese 71.0 vs 67.4), while the 4090 reads prompts about 1.85× faster (256K first token 210 s vs 393 s). Full table in the Chinese section. Decode numbers at 186K/193K are the mean of 4 seeds × 1024 generated tokens on one fixed prompt; 8K numbers are single 256-token runs. Quality: 237/300 on our public [model-evaluation](https://github.com/huangserva/model-evaluation) core-300 set versus 245 (llama.cpp Q4_K_M) and 238 (Q8_0) on a 4090, differences within noise (paired McNemar p=0.20 / p=1.0).
 
 The Volta substitutes for the hardware V100 lacks (llama.cpp's Volta flash kernel for prefill, an m8n8k4-based decode attention kernel, software NVFP4 dequant into FP16 tensor cores) come from upstream ninfer-v100. This repo rewrites the slowest of them, the INT8 decode attention kernel, retunes the prefill kernel and adds tensor parallel; the model's attention math is unchanged. What changed versus upstream is listed in [CHANGES.md](CHANGES.md); the design notes are in [docs/tp2-design-notes.md](docs/tp2-design-notes.md); the upstream README is kept as [docs/UPSTREAM-README.md](docs/UPSTREAM-README.md).
 
@@ -39,6 +39,17 @@ NInfer 官方只支持 RTX 5090。社区的 [ninfer-v100](https://github.com/geo
 | 26 万 token（喂满 262,144），生成 | 放不下 | 放不下 | 代码 91–95，中文 68–71，首字约 393 秒 |
 
 代码和中文每轮耗时一样（双卡 32.4 毫秒），中文慢只是因为这份中文测试文档的猜词命中率低（0.46 对 0.77）。
+
+和一张 4090 48G 正面比（同一份 prompt、同样参数，冷启动 / 命中缓存，tok/s；4090 跑 NInfer 官方程序、groupwise-int 权重、单卡）：
+
+| 上下文 | V100 双卡 代码 | 4090 单卡 代码 | V100 双卡 中文 | 4090 单卡 中文 | 首字等待 V100 / 4090 |
+|---|---:|---:|---:|---:|---:|
+| 8K | 140.2 | 108.6 | 105.8 | 112.2 | 6.2 s / 3.5 s |
+| 32K | 141.2 / 134.7 | 112.5 / 119.3 | 94.5 / 95.0 | 94.3 / 89.9 | 29.4 s / 16.5 s |
+| 128K | 113.9 / 109.1 | 99.8 / 105.2 | 81.1 / 83.7 | 77.6 / 78.1 | 152 s / 83 s |
+| 256K | 94.7 / 91.0 | 80.9 / 82.2 | 71.0 / 67.7 | 67.4 / 65.3 | 393 s / 210 s |
+
+生成速度双卡 V100 各档持平或略快（每轮耗时 256K 时 35 ms 对 37.7 ms），读 prompt 4090 快约 1.85 倍。
 
 能力没有变化：在我们的公开题库 [model-evaluation](https://github.com/huangserva/model-evaluation) 上，双卡 nvfp4 版 300 题答对 237，以前 4090 上 llama.cpp 的 4 位版 245、8 位版 238，逐题配对比较差距在随机误差内。
 
