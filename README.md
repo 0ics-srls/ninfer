@@ -125,7 +125,7 @@ python3 tools/tp2/tp2_proxy.py \
 | 环境变量 | 默认 | 作用 |
 |---|---|---|
 | `NINFER_SM70_ATTN_V2` | 开 | 0 切回上游的生成 attention 内核 |
-| `NINFER_SM70_LONG_SPLIT_KEYS` | 1920 | 长上下文 attention 每段的 key 数，段太碎时合并步骤会成为大头 |
+| `NINFER_SM70_LONG_SPLIT_KEYS` | 双卡 1920，单卡沿用上游的 480 | 长上下文 attention 每段的 key 数，段太碎时合并步骤会成为大头。单卡设成 1920 时这个内核从 1402 微秒降到 1130（186K，T=4），还没有改成默认 |
 | `NINFER_TP_MAILBOX` | 开 | 0 让小消息也走 NCCL |
 | `NINFER_TP_SHARD_HEADS` | 开 | 0 让两张卡各算完整词表 |
 | `NINFER_MTP_ATTN_WINDOW` | 0（关） | 猜词时只看最近 N 个 token。193K 中文能从 73 到 79，但代码的命中率从 0.72 掉到 0.59，所以默认关 |
