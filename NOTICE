@@ -1,0 +1,26 @@
+ninfer-v100-tpx
+Copyright 2026 huangserva (https://github.com/huangserva)
+
+This product is a derivative work of:
+
+  NInfer — https://github.com/Neroued/ninfer
+  Copyright (c) the NInfer authors. Licensed under the Apache License, Version 2.0.
+
+  ninfer-v100 (Tesla V100 / sm_70 port of NInfer) — https://github.com/geoffwatts/ninfer-v100
+  Licensed under the Apache License, Version 2.0. This repository starts from its commit b37d0dd.
+
+Modifications by huangserva (2026-09-25 to 2026-09-26), see CHANGES.md for the file list:
+  - rewrote the sm_70 INT8 small-T decode attention kernel (key-split, 8 warps, PRMT dequant);
+  - retuned the Volta flash prompt attention configuration;
+  - added a two-GPU tensor-parallel target (src/targets/qwen3_6_27b_tp2), NCCL-in-graph and
+    pinned-host-memory all-reduce, sharded LM/draft heads, half-width shape gates;
+  - added the rank lockstep check, the front proxy/supervisor and the artifact sharding tool
+    (src/runtime/engine/tp_lockstep.h, tools/tp2/).
+
+Ideas referenced during development (no code copied):
+  plus1998/NInfer-V100-Duo (two-GPU NInfer reference), ValerioDolci/ninfer-tp2 (pinned host
+  memory mailbox), 1CatAI/1Cat-vLLM (Volta attention comparison).
+
+Model weights are not part of this repository. The Qwen3.8-27B artifacts are published by
+neroued on Hugging Face under Apache-2.0 and are derived from Qwen/Qwen3.8-27B.
+Vendored third-party code under third_party/ keeps its own license files.

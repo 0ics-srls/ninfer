@@ -1,322 +1,159 @@
-# NInfer
+# ninfer-v100-tpx
 
-> Up to 219 decode tok/s from Qwen 3.8 27B on a single V100.  With software NVFP4 on Volta.
+Qwen3.8-27B on Tesla V100s: rewritten sm70 attention kernels + N-GPU tensor parallel for [NInfer](https://github.com/Neroued/ninfer), built on the [ninfer-v100](https://github.com/geoffwatts/ninfer-v100) port. Two GPUs today (`x` is reserved for more), ~100 tok/s at 186K context on 2× V100 32G over plain PCIe, no NVLink. Full API contract of the single-GPU build (OpenAI / Anthropic-compatible HTTP, MTP, INT8 KV, prefix cache, vision).
 
-NInfer is a from-scratch C++/CUDA inference engine optimized for selected Qwen checkpoints on NVIDIA Tesla V100.
+中文说明在下面。
 
-It supports text, image, and video input through a local CLI or OpenAI-/Anthropic-compatible HTTP APIs. The runtime is intentionally narrow: one GPU, one resident model, 1–8 active requests.
+## English summary
 
-## Models
+| Scenario (Qwen3.8-27B nvfp4, MTP draft 3) | 1× V100, upstream kernels | 1× V100, this repo | 2× V100, this repo (TP2) |
+|---|---:|---:|---:|
+| 186K-token code prompt, decode | 36 tok/s | 56 | **101.9** |
+| 193K-token Chinese prompt, decode | 26 | 43 | **73.4** |
+| 8K code / Chinese, decode | 79 / 58 | 97 / 73 | 140 / 106 |
+| 186K first-token latency | 455 s | 379 s | 250 s |
 
-| Model | Weights | Artifact | Download and model card |
-|---|---|---|---|
-| Qwen3.6-27B | `groupwise-int` | `qwen3_6_27b.ninfer` | [Qwen3.6-27B](https://huggingface.co/neroued/Qwen3.6-27B-NInfer) |
-| Qwen3.6-27B | `nvfp4` | `qwen3_6_27b_nvfp4.ninfer` | [Qwen3.6-27B NVFP4](https://huggingface.co/neroued/Qwen3.6-27B-nvfp4-NInfer) |
-| Qwen3.8-27B | `groupwise-int` | `qwen3_8_27b.ninfer` | [Qwen3.8-27B](https://huggingface.co/neroued/Qwen3.8-27B-NInfer) |
-| Qwen3.8-27B | `nvfp4` | `qwen3_8_27b_nvfp4.ninfer` | [Qwen3.8-27B NVFP4](https://huggingface.co/neroued/Qwen3.8-27B-nvfp4-NInfer) |
-| Qwen3.6-35B-A3B | `groupwise-int` | `qwen3_6_35b_a3b.ninfer` | [Qwen3.6-35B-A3B](https://huggingface.co/neroued/Qwen3.6-35B-A3B-NInfer) |
+Decode numbers at 186K/193K are the mean of 4 seeds × 1024 generated tokens on one fixed prompt; 8K numbers are single 256-token runs. Quality: 237/300 on our public [model-evaluation](https://github.com/huangserva/model-evaluation) core-300 set versus 245 (llama.cpp Q4_K_M) and 238 (Q8_0) on a 4090, differences within noise (paired McNemar p=0.20 / p=1.0).
 
-Artifacts contain the exact model weights, tokenizer, chat template, and required media frontend resources.
+What changed versus upstream is listed in [CHANGES.md](CHANGES.md); the design notes are in [docs/tp2-design-notes.md](docs/tp2-design-notes.md); the upstream README is kept as [docs/UPSTREAM-README.md](docs/UPSTREAM-README.md).
 
-## Performance
+## 这是什么
 
-Qwen3.8-27B NVFP4 reaches **218.98 decode tok/s** at K=1, with 99.2% MTP draft acceptance.
-That result is on a V100-PCIe-32GB, not SXM. The equivalent SXM2 card is roughly 7% faster; decode is predominantly HBM-bound, so PCIe bandwidth and host performance have little effect.
+NInfer 官方只支持 RTX 5090。社区的 [ninfer-v100](https://github.com/geoffwatts/ninfer-v100) 把它移植到了 V100（sm_70）。这个仓库从那个移植版的提交 `b37d0dd` 开始，做了两件事：
 
-### Tesla V100: software NVFP4 and groupwise inference
+1. **单卡提速**。重写了长上下文下最慢的那个 attention 内核，读 prompt 用的内核重新调参。186K 上下文的生成速度从 36 tok/s 提到 56，首字等待从 455 秒降到 379 秒。这部分和卡的数量无关，单卡也能直接用。
+2. **双卡张量并行（TP2）**。每张卡一个 `ninfer-serve` 进程，各放一半权重，前面一个代理把同一个请求发给两边，每层算完用 NCCL 或主机锁页内存把两边的一半加起来。186K 上下文的生成速度到 101.9 tok/s，首字等待 250 秒。
 
-The Qwen3.8-27B NVFP4 short-context target round, retested after the width-6+ verify fix below,
-peaks at K=1 draft tokens: **219.0 decode tok/s** at 99.2% draft acceptance -- narrow windows win
-outright on this corpus; see the full K sweep below.
+两天的排查过程、每一步为什么这么做，写在了一篇长文里（链接后补）。
 
-The single-request sweep uses the public Engine benchmark on a Tesla V100-PCIe-32GB with CUDA
-12.8 and INT8 group-64 KV. Prefill is an isolated `pp2048` run; decode is `pp2048+tg256` with CUDA
-Graphs and the optimized proposal head. Each result uses one discarded warmup and three measured
-repetitions. On the DFlash window sweep in the V100 notes the preferred V100-SXM2-32GB ran about
-7% faster per round; this decode workload is HBM-bound, so the host and PCIe bus barely matter.
+## 成绩
 
-| Model profile | K | Prefill tok/s | Decode tok/s | Draft acceptance |
-|---|---:|---:|---:|---:|
-| Qwen3.6-27B `groupwise-int` MTP | 4 | 1,085.0 | 54.54 | 66.5% |
-| Qwen3.6-27B `nvfp4` MTP | 5 | 223.8 | 55.22 | 54.4% |
-| Qwen3.8-27B `groupwise-int` MTP | 5 | 1,083.9 | 130.96 | 97.1% |
-| Qwen3.8-27B `nvfp4` MTP | 5 | 1,100.3 | 199.58 | 97.1% |
-| Qwen3.8-27B `groupwise-int` DFlash2 | 7 | 1,044.2 | 77.84 | 100% |
-| Qwen3.8-27B `nvfp4` DFlash2 | 7 | 1,059.0 | 126.32 | 100% |
-| Qwen3.6-35B-A3B `groupwise-int` DFlash | 4 | 686.2 | 139.58 | 90.9% |
+单位 tok/s。186K / 193K 的生成速度是同一个 prompt 换 4 个随机种子、每次生成 1024 个 token 的平均值；8K 是单次 256 个 token。
 
+| 场景 | 单卡，上游内核 | 单卡，本仓库 | 双卡，本仓库 |
+|---|---:|---:|---:|
+| 186K 代码，生成 | 36 | 56 | **101.9** |
+| 193K 中文，生成 | 26 | 43 | **73.4** |
+| 8K 代码 / 中文，生成 | 79 / 58 | 97 / 73 | 140 / 106 |
+| 186K 首字等待 | 455 秒 | 379 秒 | 250 秒 |
+| 26 万 token（喂满 262,144），生成 | 放不下 | 放不下 | 代码 91–95，中文 68–71，首字约 393 秒 |
 
-Full Qwen3.8-27B `nvfp4` MTP draft-window sweep on this same corpus-continuation shape, now that
-the width-6+ fix removes the sm_70 cap at four:
+代码和中文每轮耗时一样（双卡 32.4 毫秒），中文慢只是因为这份中文测试文档的猜词命中率低（0.46 对 0.77）。
 
-| K | Prefill tok/s | Decode tok/s | Draft acceptance |
-|---:|---:|---:|---:|
-| 1 | 1,102.5 | **218.98** | 99.2% |
-| 2 | 1,097.4 | 213.99 | 98.3% |
-| 3 | 1,094.9 | 209.24 | 97.5% |
-| 4 | 1,096.6 | 204.02 | 97.9% |
-| 5 | 1,100.3 | 199.58 | 97.1% |
-| 6 | 1,089.6 | 178.47 | 92.5% |
-| 7 | 1,087.2 | 180.74 | 93.3% |
+能力没有变化：在我们的公开题库 [model-evaluation](https://github.com/huangserva/model-evaluation) 上，双卡 nvfp4 版 300 题答对 237，以前 4090 上 llama.cpp 的 4 位版 245、8 位版 238，逐题配对比较差距在随机误差内。
 
-This corpus is a deterministic continuation with unusually high, near-ceiling acceptance at every
-K, so narrow windows win outright: round-verify cost dominates once there's little more accepted
-length to buy. Treat these as a synthetic-corpus ceiling, not a general-generation rate -- on real,
-less predictable text the practical production sweet spot is K=3 (see the long-context sweep
-elsewhere in this repo's history).
+## 改了什么
 
-Decode throughput depends strongly on draft acceptance -- see the MTP sweep above for how much.
-The sm_70 width-6+ target-verify regression is fixed (see below), so `--spec mtp` now accepts the
-same [1,7] window upstream does, no Volta-specific cap. `--spec dflash2` peaks at K=7 on this same
-corpus-continuation shape (a 3-10 sweep falls off on both sides); MTP still leads DFlash2 here at
-every K tried.
+三块，都在 [CHANGES.md](CHANGES.md) 里按文件列出。
 
-The Qwen3.8-27B artifacts also bundle DFlash2, the upstream masked-block speculative decoder
-(`--spec dflash2`). MTP remains the recommended Volta backend for general decoding. On a varied,
-non-repetitive corpus, DFlash2 K=7 narrowly beat the best MTP window at 2K and 32K context, while
-MTP led at 8K, 16K, and 150K. DFlash2 K=7 is its strongest static default; acceptance-driven
-window adaptation can favor K=3 on difficult continuations. See the full comparison in the
-[V100 port notes](docs/v100.md#varied-context-dflash2-sweep).
+**sm70 内核（单卡也生效）**
 
-MTP automatically extends verification up to fifteen draft tokens when the generated suffix
-exactly matches an earlier 16-token span and the learned proposal agrees with the lookup
-continuation. On a 172-token verbatim-copy prompt, Qwen3.8-27B NVFP4 produced the exact
-continuation at **201.0 tok/s**, averaging 12.91 output tokens per round. This is a
-context-reproduction fast path; ordinary generation continues to use the normal MTP window and
-the general decode results above.
+- `src/ops/softmax_attention/dense/causal_cache/small_t_i8_volta_v2.cuh`：新的 INT8 KV 生成 attention 内核。原版每批取 16 个 key，4 个 warp 各自把这 16 个 key 的 QK 全算一遍，每批同步两次，186K 下只跑出约 140GB/s。新版 8 个 warp、每批 64 个 key，每个 warp 只算自己那 8 个 key 的 QK，通过共享内存交换行最大值和概率，再各自做 D/8 列的 PV，每 64 个 key 同步 3 次；下一批 K/V 提前读进寄存器；int8 转 fp16 用 PRMT 字节重排代替 Volta 上很慢的转换指令。186K、T=4 时每次调用从 2.79 毫秒降到 1.29。输入输出契约和原版一致，`NINFER_SM70_ATTN_V2=0` 切回原版。
+- `src/ops/launcher/gqa_attention_volta_flash.cu`：读 prompt 用的 flash 内核配置重调（8 warp、每批 64 key、K/V 每次读入减半），131K 下 1024 token 的处理从 119 毫秒降到 88.4 毫秒。
+- 残差投影的激活先转成 fp16 再进 QPN 内核（原来在内层循环里现场转，只有约 350GB/s）；NVFP4 内核一次先发 8 组读取；残差相加并进输出阶段；attention 分段合并的小内核从 29 微秒降到 13。
 
-Context-lookup MTP was inspired by
-[syv-ai/qwen38-27b-rtx3090](https://github.com/syv-ai/qwen38-27b-rtx3090).
+**双卡目标 `src/targets/qwen3_6_27b_tp2/`**
 
-On Volta, NVFP4 is decoded and executed in software using tuned FP16 tensor-core and SIMT kernels.
-Dense MLP gate/up payloads are prepacked in place during model load for the QPN decode layout; the
-artifact on disk is unchanged and inference does not perform runtime weight repacking. The Volta
-QPN prepacking work was inspired by
-[dnv2003/v100-skinny](https://github.com/dnv2003/v100-skinny).
+- 模型变体：每卡 12 个 q 头、2 个 kv 头，GDN 的 k/v 头减半，MLP 中间维度 8704。
+- `tp2_comm.cpp`：每层三类输出投影（attention 输出、GDN 输出、MLP down）之后的 all-reduce，放在 CUDA Graph 里。rank 0 把自己的一半加到残差上，rank 1 直接覆盖残差，再对残差做一次 all-reduce。
+- `tp2_mailbox.cu`：128KB 以下的消息不走 NCCL，改走 `/dev/shm` 上的锁页内存，每个线程块一个标志位，两卡按固定顺序相加，结果逐位相同。40KB 一次从 26 微秒降到 16。`NINFER_TP_MAILBOX=0` 退回全走 NCCL。
+- LM head 和草稿 head 按词表切到两张卡，通过同一条路拼回完整 logits。`NINFER_TP_SHARD_HEADS=0` 关闭。
+- 散在 `src/ops/` 各处的十几处半宽形状登记（fp8 / nvfp4 / gdn / attn_input），以及 `d256-h12-kv2` 的 attention 几何路由。
 
-The 35B-A3B production DFlash round at a 2,048-token context uses K=3: **125.9 tok/s** and 3.8
-mean output tokens per round over ten measured rounds after two warmups.
+**运行与安全**
 
-## Quick start
+- `src/runtime/engine/tp_lockstep.h`：每个 prefill 块、每轮解码之后，两个进程通过一个共享内存文件交换本轮的 token 数、token 哈希、位置和取消标志。对不上就打印 `TP2 LOCKSTEP FAILURE` 退出；取消取两边的「或」，两张卡在同一轮停下。这条路故意不走 NCCL。
+- `tools/tp2/tp2_proxy.py`：前置代理兼看门狗。启动两个 rank，把生成请求排队一次一个，同一个请求发给两边，只把 rank 0 的回复转给客户端；客户端断开就取消；任一进程退出，或请求进行中核对计数 180 秒不动，两个进程一起重启并给客户端返回 503。
+- `tools/tp2/shard_qwen38_27b.py`：把一个 Qwen3.8-27B nvfp4 artifact 切成两份 rank artifact。q/k/v/gate/up 这类按输出行切，三类输出投影和 down 按输入列切，词嵌入、LM head、草稿 head、归一化、视觉部分整份复制，`--verify` 逐位核对能拼回原文件。
 
-NInfer requires 64-bit Linux, a Tesla V100 with CUDA Toolkit 12.8, CMake 3.28 or newer, a C++20
-host compiler, Ninja, `pkg-config`, FFmpeg
-development libraries (`libavformat >= 60`, `libavcodec >= 60`, `libavutil >= 58`, and
-`libswscale >= 7`), and `libcurl >= 7.85`. This port builds for `sm_70`.
+## 前提
 
-Select CUDA 12.8 and Volta explicitly:
+- 两张 Tesla V100 32G（PCIe 即可；这套代码就是在直连坏掉的机器上开发的，代理会设 `NCCL_P2P_DISABLE=1`）。16G 的 V100 没有测过，按每卡约 20GB 的占用算放不下。
+- CUDA 12.8（CUDA 13 去掉了 Volta 的离线编译），CMake 3.28+，Ninja，C++20 编译器，FFmpeg 开发库，libcurl。和上游一样。
+- 一份带 sm_70 内核的 NCCL。Ubuntu 24.04 自带的 NCCL 2.31 没有 Volta 内核，第一次 all-reduce 就报 `named symbol not found`。可以直接解开 pip 包：
 
 ```bash
+pip download --no-deps nvidia-nccl-cu12==2.21.5 -d /tmp/nccl && cd /tmp/nccl && unzip -q *.whl
+# 之后 /tmp/nccl/nvidia/nccl 下有 include/nccl.h 和 lib/libnccl.so.2
+```
+
+- 切权重的工具要 Python 3.12 和 torch（CPU 版就够）。
+- 模型：Hugging Face 上 neroued 发布的 `Qwen3.8-27B-nvfp4-NInfer`（v2 artifact）。
+
+## 编译
+
+```bash
+git clone https://github.com/huangserva/ninfer-v100-tpx.git && cd ninfer-v100-tpx
 cmake -S . -B build-v100 -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.8/bin/nvcc \
-  -DCMAKE_CUDA_ARCHITECTURES=70
+  -DCMAKE_CUDA_ARCHITECTURES=70 \
+  -DNINFER_NCCL_ROOT=/tmp/nccl/nvidia/nccl
 cmake --build build-v100 -j
 ```
 
-The same five `.ninfer` artifacts use the public Engine/CLI/serving routes. See the
-[V100 port notes](docs/v100.md) for qualification and the preferred-GPU launcher.
+产物是 `build-v100/apps/ninfer` 和 `build-v100/apps/ninfer-serve`。单卡用法和上游完全一样，新内核默认开启。
 
-On Volta, loading an NVFP4 artifact repacks each dense MLP gate/up and down payload in place on the
-GPU into the QPN fragment order used by the decode kernels. Row-scaled FP8 payloads are likewise
-permuted into their native Volta QPN stream. The `.ninfer` file and host-side artifact bytes
-are unchanged, the device allocation remains the same size, and temporary repack storage is
-released before inference. These device-resident weights are therefore deliberately mutated at
-load; the V100 path does not retain checkpoint-native immutable layout for those payloads.
-
-Tests, benchmarks, and maintainer tools are excluded from the default build. There is no install
-target or packaged binary distribution; run NInfer from its source build tree.
-
-Download the artifact used by this example with the Hugging Face CLI:
+## 切权重
 
 ```bash
-hf download neroued/Qwen3.8-27B-nvfp4-NInfer \
-  qwen3_8_27b_nvfp4.ninfer \
-  --local-dir models
+python -m tools.tp2.shard_qwen38_27b \
+  /path/to/qwen3_8_27b_nvfp4.ninfer /path/to/models-tp2/qwen3_8_27b_nvfp4 --verify
+# 得到 qwen3_8_27b_nvfp4.rank0.ninfer 和 qwen3_8_27b_nvfp4.rank1.ninfer，各约 12.4GB
 ```
 
-Start a long-running text/vision agent server with one active-request lane and Device/Host
-checkpoint retention:
+## 运行双卡
 
 ```bash
-./build/apps/ninfer-serve models/qwen3_8_27b_nvfp4.ninfer \
-  --max-context 240000 \
-  --prefill-chunk 2048 \
-  --kv-capacity auto \
-  --max-concurrency 1 \
-  --kv-dtype int8 \
-  --device-state-slots 1 \
-  --host-state-slots 8 \
-  --host-kv-mib 8192 \
-  --spec mtp --draft-tokens 4 \
-  --lm-head-draft \
-  --preserve-thinking \
-  --vision
+python3 tools/tp2/tp2_proxy.py \
+  --listen 127.0.0.1:18881 --binary build-v100/apps/ninfer-serve \
+  --model-prefix /path/to/models-tp2/qwen3_8_27b_nvfp4 \
+  --api-key-file /path/to/api-key --log-dir ./logs --gpus 0,1 -- \
+  --model-id qwen38-ninfer --max-context 262144 --kv-capacity auto \
+  --max-concurrency 1 --prefill-chunk 2048 --kv-dtype int8 \
+  --spec mtp --draft-tokens 3 --lm-head-draft --vision --seed 42
 ```
 
-Each request has a 240,000-token logical ceiling. The Device KV pool is sized from the memory left
-after weights, workspace, state, Vision, and graph allocations. The cache tiers provide one Device
-checkpoint slot, eight pinned Host State slots, and 8 GiB of pinned Host KV.
+`--` 后面的参数原样传给两个 `ninfer-serve`。日志里出现 `both ranks ready` 就可以用了，接口和单卡版一样。几点说明：
 
-Send an OpenAI-style request:
+- 两个进程必须用同一个随机种子（`--seed`），否则同一个概率表会抽出不同的字，核对会失败。客户端请求里带了 seed 就按客户端的来。
+- 一次只处理一个请求，最多排队 4 个（`--max-waiting`），排队超过 `--pending-timeout` 秒返回 503。
+- 两张卡各占约 20GB 显存，`--max-context 262144` 加 `--vision` 放得下。
+- 容器化部署见 `deploy/Dockerfile.tp2` 和 `deploy/start_tp2.sh`。
 
-```bash
-curl http://127.0.0.1:8080/v1/chat/completions \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3.8-27b",
-    "messages": [{"role": "user", "content": "Reply with one short sentence."}],
-    "max_tokens": 64
-  }'
-```
+## 运行时开关
 
-Run a one-shot CLI request with a 32,768-token allocation:
+| 环境变量 | 默认 | 作用 |
+|---|---|---|
+| `NINFER_SM70_ATTN_V2` | 开 | 0 切回上游的生成 attention 内核 |
+| `NINFER_SM70_LONG_SPLIT_KEYS` | 1920 | 长上下文 attention 每段的 key 数，段太碎时合并步骤会成为大头 |
+| `NINFER_TP_MAILBOX` | 开 | 0 让小消息也走 NCCL |
+| `NINFER_TP_SHARD_HEADS` | 开 | 0 让两张卡各算完整词表 |
+| `NINFER_MTP_ATTN_WINDOW` | 0（关） | 猜词时只看最近 N 个 token。193K 中文能从 73 到 79，但代码的命中率从 0.72 掉到 0.59，所以默认关 |
+| `NINFER_TP_LOCKSTEP_TIMEOUT_S` | 300 | 等对方核对的超时 |
 
-```bash
-./build/apps/ninfer models/qwen3_8_27b_nvfp4.ninfer \
-  --prompt "Explain prefill and decode, then give a concise conclusion." \
-  --max-context 32768 \
-  --max-new 8192 \
-  --kv-dtype fp8 \
-  --spec mtp --draft-tokens 3 \
-  --lm-head-draft
-```
+`NINFER_TP_RANK`、`NINFER_TP_ID_FILE`、`NINFER_TP_LOCKSTEP_FILE`、`NINFER_TP_MAILBOX_FILE` 由代理设置，不用手动管。
 
-Answer content is written to stdout. Structured startup/runtime-error records and the CLI-owned
-reasoning, timing, throughput, memory, and speculative-decoding report are written to stderr;
-reasoning and the result report remain unprefixed product output. On a terminal, weight
-materialization additionally uses one transient progress line. Redirected stderr receives only
-persistent structured phase records, including rate-limited progress for long loads. Option and
-local input errors remain direct command diagnostics. Use `--messages FILE` and `--vision` for
-structured image/video input; see the [CLI guide](docs/cli.md) and
-[committed examples](examples/cli/).
+## 已知问题
 
-## Resource-aware long-context reuse
+- 两卡偶发结果不一致。上线后的一次 300 题评测里出现过一次，被每轮核对拦下，两个进程重启 23 秒恢复，没有输出错的内容。根因还没有查到。
+- 只实现了 2 卡。仓库名里的 x 是给后面留的，4 卡的切分和 all-reduce 还没有做。
+- 中文长上下文稳定在 73 左右，没有到 80。剩余的耗时里 attention 10.5 毫秒是大头，Volta 每个 SM 只能驻留一个线程块，几版重写都只快了 3% 到 14%。
+- 主机锁页内存那块必须放在 `/dev/shm` 这类内存文件系统上，放磁盘上的文件 `cudaHostRegister` 会拒绝。
+- 代理是 Python 标准库写的单文件脚本，够用，但不是一个精致的服务框架。
 
-A reusable prefix checkpoint contains KV and the complete continuation state for its exact prompt
-frontier. A Device-resident checkpoint resumes directly. Under pressure, the planner weighs Device
-retention, pinned Host State/KV, and eviction by immediate restore work and later reuse cost. Active
-requests retain their completion reservations.
+## 路线图
 
-See [Resource scheduling and context cache](docs/maintainer/resource-scheduling-and-context-cache.md)
-for the algorithm and [Serve TTFT benchmark](tools/bench/ttft/) for public-HTTP coverage of hot
-reuse, Host resume, eviction, shared prefixes, scheduling boundaries, and multimodal load.
+- NVLink 机器上的实测。按现在的拆分，双卡每轮 33 毫秒里卡间通信只占 2.2 毫秒，NVLink 对生成速度的帮助估计不到一成，对首字等待帮助更大。到货后补数据。
+- 4 卡。
+- 中文长上下文到 80。
 
-## Evaluation
+## 致谢与许可
 
-Capability scores were measured through NInfer's OpenAI-compatible serving route with thinking
-enabled, MTP3, and EvalScope 1.9.0 (0-shot, rule scoring, one sample per problem):
+- [Neroued/ninfer](https://github.com/Neroued/ninfer)：NInfer 本体，Apache-2.0。
+- [geoffwatts/ninfer-v100](https://github.com/geoffwatts/ninfer-v100)：V100 移植，本仓库的起点，Apache-2.0。
+- [plus1998/NInfer-V100-Duo](https://github.com/plus1998/NInfer-V100-Duo)：双卡参考实现，我们测了它的基线并用 nsys 拆过它的时间线。
+- [ValerioDolci/ninfer-tp2](https://github.com/ValerioDolci/ninfer-tp2)：锁页内存信箱的思路来自这里。
+- [1CatAI/1Cat-vLLM](https://github.com/1CatAI/1Cat-vLLM)：对照测试用的另一个 V100 引擎。
+- 模型权重来自 [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) 和 neroued 发布的 NInfer artifact。
 
-| Model profile | AIME 2025 | AIME 2026 | GPQA-Diamond | ERQA | RealWorldQA |
-|---|---:|---:|---:|---:|---:|
-| [Qwen3.6-27B groupwise-int](model-cards/Qwen3.6-27B-NInfer/README.md) | 86.67% | 93.33% | 86.87% | — | — |
-| [Qwen3.6-27B NVFP4](model-cards/Qwen3.6-27B-nvfp4-NInfer/README.md) | 93.33% | 93.33% | 84.34% | — | — |
-| [Qwen3.6-35B-A3B groupwise-int](model-cards/Qwen3.6-35B-A3B-NInfer/README.md) | 90.00% | 90.00% | 85.35% | — | — |
-| [Qwen3.8-27B groupwise-int](model-cards/Qwen3.8-27B-NInfer/README.md) | 96.67% | 96.67% | 87.37% | 66.25% | 82.22% |
-| [Qwen3.8-27B NVFP4](model-cards/Qwen3.8-27B-nvfp4-NInfer/README.md) | 96.67% | 96.67% | 90.40% | 66.25% | 83.53% |
-
-The Qwen3.6 rows used temperature 0.6 and presence penalty 1.0; the Qwen3.8 rows used temperature
-1.0 and presence penalty 0.0. Multimodal evaluation used `--vision` and an 81,920-token context
-limit. Text evaluation used 262,144 tokens except Qwen3.8-27B NVFP4, which used 252,928 tokens for
-its measured memory envelope. Each score is one sample per problem; model cards contain the
-correct/total counts and evaluation notes.
-
-## Startup notes
-
-GPU residency is fixed at process startup. `--spec` selects speculative decoding residency, and
-`--vision` selects Vision residency. DFlash is available for text-only Qwen3.6-35B-A3B execution,
-and DFlash2 for Qwen3.8-27B.
-
-## Docker
-
-Build the runtime image on a host with the NVIDIA Container Toolkit:
-
-```bash
-docker build --tag ninfer:local .
-```
-
-Mount the downloaded model and run the same example server profile:
-
-```bash
-docker run --rm \
-  --gpus '"device=0"' \
-  --publish 8080:8080 \
-  --volume "$PWD/models:/models:ro" \
-  ninfer:local \
-  ninfer-serve /models/qwen3_8_27b_nvfp4.ninfer \
-  --host 0.0.0.0 \
-  --max-context 240000 \
-  --kv-capacity auto \
-  --max-concurrency 1 \
-  --kv-dtype int8 \
-  --device-state-slots 1 \
-  --host-state-slots 8 \
-  --host-kv-mib 8192 \
-  --spec mtp --draft-tokens 4 \
-  --lm-head-draft \
-  --preserve-thinking \
-  --vision
-```
-
-## Capabilities and limits
-
-All registered model IDs support:
-
-- text generation with thinking and non-thinking prompt modes;
-- image, multi-image, video, and mixed multimodal messages;
-- chunked prefill, exact-batch CUDA Graph decode, and startup-bounded batched decode;
-- MTP speculative decoding with draft windows from one to seven;
-- DFlash2 masked-block speculative decoding for Qwen3.8-27B (from the upstream integration),
-  draft windows from one to fifteen;
-- BF16, INT8, and FP8 KV storage;
-- offline causal-perplexity scoring;
-- private and shared exact-prefix reuse with Device/Host State and KV retention;
-- model-aware sampling defaults and explicit sampler overrides;
-- OpenAI Responses Core, OpenAI Chat Completions, and Anthropic Messages, including streaming,
-  tools, local response state, token counting, and usage accounting.
-
-The 35B-A3B target additionally supports text-only DFlash with draft windows from one to fifteen.
-
-The product boundary remains intentionally small:
-
-- one Tesla V100 and one resident model per Engine;
-- a startup-fixed capacity of one to eight active requests with bounded FIFO ingress;
-- no request preemption, priority/QoS, active-request swapping, weight offload, multi-GPU, or
-  distributed serving;
-- one shared startup-fixed KV pool across active requests and retained prefixes;
-- no runtime model discovery or unregistered checkpoint fallback;
-- parsed tool calls are returned to the client; NInfer does not execute tools;
-- the in-tree C++ headers are not distributed as an installed SDK.
-
-`--max-context` is each sequence's logical limit. `--kv-capacity` sizes the shared Main Text KV pool
-used by active requests and retained prefixes; `auto` resolves the largest legal capacity at
-startup from the memory remaining after weights while keeping 1 GiB of sizing headroom. Explicit
-capacities remain fixed for the process lifetime.
-
-## Documentation
-
-- [Documentation index](docs/README.md)
-- [CLI](docs/cli.md)
-- [HTTP serving](docs/serving.md)
-- [V100 qualification and performance](docs/v100.md)
-- [Perplexity evaluation](docs/perplexity.md)
-- [Resource scheduling and context cache](docs/maintainer/resource-scheduling-and-context-cache.md)
-- [Serve TTFT benchmark](tools/bench/ttft/)
-- [CLI examples](examples/cli/)
-- [Contributing](CONTRIBUTING.md)
-
-Run the relevant `--help` for the exact current option contract.
-
-## License
-
-NInfer is licensed under the [Apache License 2.0](LICENSE).
-
-The published artifacts are derived from
-[Qwen/Qwen3.6-27B](https://huggingface.co/Qwen/Qwen3.6-27B),
-[Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B), and
-[Qwen/Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B). The Qwen3.6-27B NVFP4 artifact
-also uses the fixed packed weights from
-[rdtand/Qwen3.6-27B-PrismaSCOUT-Blackwell-NVFP4-BF16-vllm](https://huggingface.co/rdtand/Qwen3.6-27B-PrismaSCOUT-Blackwell-NVFP4-BF16-vllm).
-The Qwen3.8-27B NVFP4 artifact also uses the fixed mixed FP8/NVFP4 weights from
-[unsloth/Qwen3.8-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4). These source
-repositories are distributed under Apache-2.0. Vendored dependencies retain their own license files
-under `third_party/`.
+本仓库沿用 [Apache License 2.0](LICENSE)，修改说明见 [NOTICE](NOTICE) 和 [CHANGES.md](CHANGES.md)。
