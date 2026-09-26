@@ -332,9 +332,16 @@ void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, 
     debug::dump_last_column_once(activation, "pm_act", stream);
     debug::dump_last_column_once(residual, "pm_res_in", stream);
     if (tp2::rank() != 0) {
-        // Rank 1 contributes only its partial sum. The load step prepacks NVFP4 MLP weights for
-        // the Volta QPN route, which linear_add reads correctly at every width but linear's
-        // wide-T MMA route does not; so zero the destination and reuse linear_add.
+        // Rank 1 contributes only its partial sum. At decode widths linear() takes the QPN route,
+        // which reads the prepacked NVFP4 weights correctly, so it writes the partial directly.
+        // Wider (prefill) linear() would take the MMA route, which misreads prepacked weights:
+        // zero the destination and reuse linear_add there.
+        if (activation.ne[1] <= 32) {
+            ops::linear(activation, weights.down, residual, text_policy(weights.down), workspace,
+                        stream);
+            tp2::allreduce(residual, stream);
+            return;
+        }
         CUDA_CHECK(cudaMemsetAsync(residual.data, 0,
                                    static_cast<std::size_t>(residual.ne[0]) * residual.ne[1] *
                                        sizeof(std::uint16_t),

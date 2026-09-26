@@ -72,34 +72,44 @@ std::uint64_t id_nonce(const ncclUniqueId& id) {
 // sees the same nonce, so a stale file from an earlier run can never be mistaken for this one.
 void init_mailbox(int rank, const std::string& path, std::uint64_t nonce) {
     const std::size_t bytes = (sizeof(MailboxShared) + 4095) / 4096 * 4096;
-    int fd = -1;
+    void* host = nullptr;
     if (rank == 0) {
-        fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0600);
+        // Build the block under a private name and publish it with an atomic rename: the peer may
+        // still have a previous run's file mapped, and truncating that inode in place would SIGBUS it.
+        const std::string tmp = path + ".tmp";
+        ::unlink(tmp.c_str());
+        const int fd = ::open(tmp.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
         if (fd < 0 || ::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
-            throw std::runtime_error("TP2: cannot create mailbox " + path);
+            throw std::runtime_error("TP2: cannot create mailbox " + tmp);
         }
-    } else {
-        for (int attempt = 0;; ++attempt) {
-            fd = ::open(path.c_str(), O_RDWR);
-            struct stat st {};
-            if (fd >= 0 && ::fstat(fd, &st) == 0 && static_cast<std::size_t>(st.st_size) >= bytes) { break; }
-            if (fd >= 0) { ::close(fd); fd = -1; }
-            if (attempt > 6000) { throw std::runtime_error("TP2: timed out waiting for mailbox"); }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-    }
-    void* host = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    ::close(fd);
-    if (host == MAP_FAILED) { throw std::runtime_error("TP2: mailbox mmap failed"); }
-    auto* mb = static_cast<MailboxShared*>(host);
-    auto* magic = reinterpret_cast<volatile std::uint64_t*>(&mb->magic);
-    if (rank == 0) {
+        host = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        ::close(fd);
+        if (host == MAP_FAILED) { throw std::runtime_error("TP2: mailbox mmap failed"); }
         std::memset(host, 0, bytes);
         std::atomic_thread_fence(std::memory_order_seq_cst);
-        *magic = nonce;
+        *reinterpret_cast<volatile std::uint64_t*>(&static_cast<MailboxShared*>(host)->magic) = nonce;
+        if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+            throw std::runtime_error("TP2: cannot publish mailbox " + path);
+        }
     } else {
-        for (int attempt = 0; *magic != nonce; ++attempt) {
-            if (attempt > 6000) { throw std::runtime_error("TP2: mailbox nonce mismatch"); }
+        // Re-open until the file carries this run's nonce (an older file is simply skipped).
+        for (int attempt = 0;; ++attempt) {
+            if (attempt > 6000) { throw std::runtime_error("TP2: timed out waiting for mailbox"); }
+            const int fd = ::open(path.c_str(), O_RDWR);
+            struct stat st {};
+            if (fd >= 0 && ::fstat(fd, &st) == 0 && static_cast<std::size_t>(st.st_size) == bytes) {
+                void* p = ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                ::close(fd);
+                if (p != MAP_FAILED) {
+                    if (*reinterpret_cast<volatile std::uint64_t*>(&static_cast<MailboxShared*>(p)->magic) == nonce) {
+                        host = p;
+                        break;
+                    }
+                    ::munmap(p, bytes);
+                }
+            } else if (fd >= 0) {
+                ::close(fd);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
