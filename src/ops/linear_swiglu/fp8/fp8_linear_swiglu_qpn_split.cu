@@ -10,10 +10,11 @@ namespace ninfer::ops::detail {
 
 #ifdef NINFER_VOLTA_BUILD
 
-constexpr std::int32_t kIntermediate = 17408; // Fp8MlpGateUpGeometry::kOutputRows / 2
+// gate_up rows / 2: 17408 for the full model, 8704 for a TP2 rank shard.
+constexpr std::int32_t kFullIntermediate = 17408;
 
 bool fp8_linear_swiglu_qpn_split_supported(std::int32_t k, std::int32_t t) noexcept {
-    return fp8_volta_qpn_supported(kIntermediate, k, t);
+    return fp8_volta_qpn_supported(kFullIntermediate / 2, k, t);
 }
 
 void fp8_linear_swiglu_qpn_split_launch(const Tensor& x, const Weight& weight, Tensor& out,
@@ -21,6 +22,7 @@ void fp8_linear_swiglu_qpn_split_launch(const Tensor& x, const Weight& weight, T
                                         void* activation_scratch,
                                         cudaStream_t stream) {
     const std::int32_t t = x.ne[1];
+    const std::int32_t kIntermediate = weight.n / 2;
     auto* x_fp16 = static_cast<half*>(activation_scratch);
     fp8_stage_bf16_activation_sm70(x, x_fp16, stream);
 

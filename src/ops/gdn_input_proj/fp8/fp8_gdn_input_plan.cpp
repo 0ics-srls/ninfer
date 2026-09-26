@@ -55,8 +55,8 @@ std::size_t fp8_gdn_input_workspace_capacity_bytes(LinearPolicy policy, std::int
 
 void fp8_gdn_input_a16_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, Tensor& z,
                                 WorkspaceArena* workspace, cudaStream_t stream) {
-    constexpr std::int32_t kQkvRows = 10240;
-    constexpr std::int32_t kZRows   = 6144;
+    const std::int32_t kQkvRows = weight.n / 16 * 10; // 10240, or 5120 for a TP2 shard
+    const std::int32_t kZRows   = weight.n / 16 * 6;  // 6144, or 3072
 #ifdef NINFER_VOLTA_BUILD
     if (x.ne[1] >= kVoltaCutlassMinT) {
         if (workspace == nullptr) {

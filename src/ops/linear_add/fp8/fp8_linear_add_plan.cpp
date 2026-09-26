@@ -27,6 +27,11 @@ enum class Fp8LinearAddRoute : std::uint8_t {
 
 Fp8LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows,
                                 LinearPolicy policy, std::int32_t tokens) {
+#ifdef NINFER_VOLTA_BUILD
+    if (is_fp8_tp2_half_problem(output_rows, input_rows)) {
+        input_rows = fp8_tp2_full_input_rows(output_rows, input_rows);
+    }
+#endif
     if (tokens <= 0 || output_rows != Fp8Residual6144Geometry::kOutputRows ||
         (input_rows != Fp8Residual6144Geometry::kInputRows &&
          input_rows != Fp8Residual17408Geometry::kInputRows)) {

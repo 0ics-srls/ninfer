@@ -131,9 +131,14 @@ void dispatch_single_parent(const Tensor& x, const Weight& weight, Tensor& q, Te
 
     if (weight.qtype == QType::FP8_E4M3FN_ROW_BF16S) {
         constexpr std::int32_t kHidden = 5120;
-        constexpr std::int32_t kQRows  = 6144;
-        constexpr std::int32_t kKvRows = 1024;
-        constexpr std::int32_t kRows   = 14336;
+#ifdef NINFER_VOLTA_BUILD
+        // 14336 fused rows, or a 7168-row TP2 rank shard (q/gate 3/7, k/v 1/14 of the rows).
+        const std::int32_t kRows = weight.n == 7168 ? 7168 : 14336;
+#else
+        const std::int32_t kRows = 14336;
+#endif
+        const std::int32_t kQRows  = kRows * 3 / 7;
+        const std::int32_t kKvRows = kRows / 14;
         const std::int32_t cols        = x.ne[1];
         if (cols <= 0) { throw std::invalid_argument("attn_input_proj: T must be positive"); }
         if (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8) {
@@ -195,7 +200,11 @@ std::size_t attn_input_proj_workspace_capacity_bytes(QType parent_qtype, std::in
         }
         return detail::nvfp4_attn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
     case QType::FP8_E4M3FN_ROW_BF16S:
-        if (parent_rows != detail::Fp8AttnInputGeometry::kOutputRows ||
+        if ((parent_rows != detail::Fp8AttnInputGeometry::kOutputRows
+#ifdef NINFER_VOLTA_BUILD
+             && parent_rows != 7168
+#endif
+             ) ||
             input_rows != detail::Fp8AttnInputGeometry::kInputRows) {
             throw std::invalid_argument("attn_input_proj workspace: unsupported FP8 profile");
         }

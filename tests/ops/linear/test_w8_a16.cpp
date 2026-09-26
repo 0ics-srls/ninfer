@@ -154,6 +154,19 @@ int w8_a16_conformance() {
     failures += run_shape("W8_A16", ActivationCompute::A16, make_w8g32_f16s_weight,
                           {2048, 16384, 283U, Comparison::Sampled, false, kN2048K16384});
 
+    // TP2 rank shards of the Qwen3.8-27B MTP layer (Volta shape-generic routes).
+    {
+        std::vector<Invocation> tp2_calls;
+        for (int t : {1, 2, 3, 4, 5, 8, 16, 17, 64, 128, 2048}) tp2_calls.push_back(a16(t));
+        const std::array<std::array<std::int32_t, 2>, 6> tp2_shapes{{
+            {7168, 5120}, {5120, 3072}, {17408, 5120}, {5120, 8704}, {3072, 5120}, {512, 5120}}};
+        unsigned seed = 401U;
+        for (const auto& nk : tp2_shapes) {
+            failures += run_shape("W8_A16_tp2", ActivationCompute::A16, make_w8g32_f16s_weight,
+                                  {nk[0], nk[1], seed++, Comparison::Sampled, false, tp2_calls});
+        }
+    }
+
     failures += feature_conformance();
 
     return failures;

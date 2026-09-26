@@ -452,6 +452,8 @@ struct FoldGeometry {
 
 using FoldGeometry48x48 = FoldGeometry<48, 16, 48, 10240>;
 using FoldGeometry30x32 = FoldGeometry<30, 16, 32, 8192>;
+// TP2 rank shard of FoldGeometry48x48 (8 key heads, 24 value heads, 5120 conv channels).
+using FoldGeometry48x24 = FoldGeometry<48, 8, 24, 5120>;
 
 template <class Geometry>
 struct FoldAccess {

@@ -26,6 +26,9 @@ enum class Nvfp4LinearAddRoute : std::uint8_t {
 
 Nvfp4LinearAddRoute resolve_route(std::int32_t output_rows, std::int32_t input_rows,
                                   LinearPolicy policy, std::int32_t tokens) {
+#ifdef NINFER_VOLTA_BUILD
+    if (is_nvfp4_tp2_half_problem(output_rows, input_rows)) { input_rows *= 2; }
+#endif
     if (tokens <= 0 || output_rows != 5120 || (input_rows != 6144 && input_rows != 17408)) {
         throw std::invalid_argument("nvfp4 linear_add: unsupported shape");
     }

@@ -13,8 +13,9 @@ namespace ninfer::ops::detail {
 #ifdef NINFER_VOLTA_BUILD
 
 namespace {
-constexpr std::int32_t kIntermediate = 17408; // Nvfp4MlpGateUpGeometry::kOutputRows / 2
-constexpr std::int32_t kMTileOffset  = kIntermediate / 128; // 136, exact
+// The intermediate width is the gate_up row count / 2: 17408 for the full model, 8704 for a TP2
+// rank shard. The up half starts at M-tile intermediate/128 of the swizzled scale plane.
+constexpr std::int32_t kFullIntermediate = 17408;
 
 __global__ void bf16_to_fp16_kernel(const __nv_bfloat16* __restrict__ input,
                                     half* __restrict__ output, std::int64_t count) {
@@ -24,7 +25,7 @@ __global__ void bf16_to_fp16_kernel(const __nv_bfloat16* __restrict__ input,
 } // namespace
 
 bool nvfp4_linear_swiglu_qpn_split_supported(std::int32_t k, std::int32_t t) noexcept {
-    return nvfp4_volta_qpn_supported(kIntermediate, k, t);
+    return nvfp4_volta_qpn_supported(kFullIntermediate / 2, k, t);
 }
 
 void nvfp4_linear_swiglu_qpn_split_launch(const Tensor& x, const Weight& weight, Tensor& out,
@@ -34,6 +35,8 @@ void nvfp4_linear_swiglu_qpn_split_launch(const Tensor& x, const Weight& weight,
     const std::int32_t k = x.ne[0];
     const std::int32_t t = x.ne[1];
     const float inverse_weight_divisor = 1.0F / weight.weight_scale_divisor;
+    const std::int32_t kIntermediate    = weight.n / 2;
+    const std::int32_t kMTileOffset     = kIntermediate / 128;
     auto* x_fp16 = static_cast<half*>(activation_scratch);
     const std::int64_t activation_count = static_cast<std::int64_t>(k) * t;
     bf16_to_fp16_kernel<<<static_cast<int>((activation_count + 255) / 256), 256, 0, stream>>>(

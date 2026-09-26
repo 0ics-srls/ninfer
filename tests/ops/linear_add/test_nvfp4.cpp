@@ -92,6 +92,11 @@ int run_shape(std::int32_t n, std::int32_t k, std::uint32_t seed) {
     const std::array invocations{
         Invocation{1, ops::LinearPolicy::A16Only},
         Invocation{4, ops::LinearPolicy::A16Only},
+        Invocation{17, ops::LinearPolicy::A16Only},
+        Invocation{51, ops::LinearPolicy::A16Only},
+        Invocation{64, ops::LinearPolicy::A16Only},
+        Invocation{256, ops::LinearPolicy::A16Only},
+        Invocation{1024, ops::LinearPolicy::A16Only},
     };
 #else
     const std::int32_t first_a4 = k == 6144 ? 7 : 8;
@@ -219,6 +224,9 @@ int main() {
     int failures = 0;
     failures += run_shape(5120, 6144, 811U);
     failures += run_shape(5120, 17408, 821U);
+#ifdef NINFER_VOLTA_BUILD
+    failures += run_shape(5120, 8704, 831U); // TP2 rank shard
+#endif
     std::cout << (failures == 0 ? "OK" : "FAIL") << " NVFP4 linear_add\n";
     return failures == 0 ? 0 : 1;
 }

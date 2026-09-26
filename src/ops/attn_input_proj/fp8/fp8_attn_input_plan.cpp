@@ -32,8 +32,8 @@ Fp8AttnInputRoute resolve_route(LinearPolicy policy, std::int32_t tokens) {
 
 void launch_a16(const Tensor& x, const Weight& weight, Tensor& q, Tensor& gate, Tensor& k,
                 Tensor& v, WorkspaceArena* workspace, cudaStream_t stream) {
-    constexpr std::int32_t kQRows  = 6144;
-    constexpr std::int32_t kKvRows = 1024;
+    const std::int32_t kQRows  = weight.n * 3 / 7; // 6144, or 3072 for a TP2 shard
+    const std::int32_t kKvRows = weight.n / 14;    // 1024, or 512
 #ifdef NINFER_VOLTA_BUILD
     if (x.ne[1] >= kVoltaCutlassMinT) {
         if (workspace == nullptr) {

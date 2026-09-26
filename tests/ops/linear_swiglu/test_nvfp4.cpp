@@ -15,6 +15,15 @@ int main() {
         failures += run_profile("LinearSwiGLU NVFP4_A16",
                                 {QType::NVFP4, 34816, 5120, 17408, 1801U, ActivationCompute::A16},
                                 kA16Cases);
+#ifdef NINFER_VOLTA_BUILD
+        constexpr std::array<std::int32_t, 7> kTp2Cases{1, 4, 8, 16, 64, 256, 1024};
+        failures += run_profile("LinearSwiGLU NVFP4_A16 full-bigT",
+                                {QType::NVFP4, 34816, 5120, 17408, 1805U, ActivationCompute::A16},
+                                kTp2Cases);
+        failures += run_profile("LinearSwiGLU NVFP4_A16 tp2",
+                                {QType::NVFP4, 17408, 5120, 8704, 1807U, ActivationCompute::A16},
+                                kTp2Cases);
+#endif
 #ifndef NINFER_VOLTA_BUILD
         failures +=
             run_profile("LinearSwiGLU NVFP4_A4",

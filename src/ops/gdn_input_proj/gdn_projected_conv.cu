@@ -77,7 +77,7 @@ void launch(const Tensor& projected, const Tensor& conv_weight, const Tensor& st
     constexpr int kDefaultThreads = 256;
     const std::int32_t width      = projected.ne[1];
     const std::int32_t batch      = projected.ne[2];
-    if constexpr (Channels == 10240) {
+    if constexpr (Channels == 10240 || Channels == 5120) {
         if (width == 4 && batch == 1) {
             constexpr int kT4Threads = 64;
             gdn_projected_conv_kernel<Channels, QueryRows, KeyRows, ValueRows, 4>
@@ -118,6 +118,13 @@ void dispatch(const Tensor& projected, const Tensor& conv_weight, const Tensor& 
         value.ne[0] == 6144) {
         launch<10240, 2048, 2048, 6144>(projected, conv_weight, state_read, valid_columns,
                                         initial_state_slots, query, key, value, publish, stream);
+        return;
+    }
+    // TP2 rank shard of the Qwen3.8-27B GDN (8 key heads, 24 value heads).
+    if (projected.ne[0] == 5120 && query.ne[0] == 1024 && key.ne[0] == 1024 &&
+        value.ne[0] == 3072) {
+        launch<5120, 1024, 1024, 3072>(projected, conv_weight, state_read, valid_columns,
+                                       initial_state_slots, query, key, value, publish, stream);
         return;
     }
     if (projected.ne[0] == 8192 && query.ne[0] == 2048 && key.ne[0] == 2048 &&

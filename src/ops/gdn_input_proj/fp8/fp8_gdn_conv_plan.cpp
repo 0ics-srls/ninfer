@@ -187,11 +187,15 @@ void launch_snapshot_plan(const Tensor& x, const Weight& weight, const Tensor& c
     const std::int32_t aggregate_columns = width * batch;
     auto scope                           = workspace.scope();
     Fp8GdnProjectedWorkspace scratch     = allocate_projected(workspace, aggregate_columns);
+    // qkv channels / z rows are 10/16 and 6/16 of the fused rows (16384, or 8192 for a TP2 shard).
+    const std::int32_t channels = weight.n / 16 * 10;
+    const std::int32_t z_rows   = weight.n / 16 * 6;
     Tensor x_flat(x.data, DType::BF16, {Fp8GdnInputGeometry::kInputRows, aggregate_columns});
-    Tensor z_flat(z.data, DType::BF16, {kZRows, aggregate_columns});
-    launch_projection(x_flat, weight, scratch.projected, z_flat, plan.schedule, workspace, stream);
+    Tensor z_flat(z.data, DType::BF16, {z_rows, aggregate_columns});
+    Tensor projected_flat(scratch.projected.data, DType::BF16, {channels, aggregate_columns});
+    launch_projection(x_flat, weight, projected_flat, z_flat, plan.schedule, workspace, stream);
 
-    Tensor projected(scratch.projected.data, DType::BF16, {kChannels, width, batch});
+    Tensor projected(scratch.projected.data, DType::BF16, {channels, width, batch});
     gdn_projected_conv_snapshot_launch(projected, conv_weight, conv_states, valid_columns,
                                        initial_slot, snapshot_base_slot, query, key, value, stream);
 }
@@ -212,8 +216,10 @@ void launch_record_plan(const Tensor& x, const Weight& weight, const Tensor& con
     const std::int32_t aggregate_columns = width * batch;
     auto scope                           = workspace.scope();
     Tensor x_flat(x.data, DType::BF16, {Fp8GdnInputGeometry::kInputRows, aggregate_columns});
-    Tensor record_flat(conv_record.data, DType::BF16, {kChannels, aggregate_columns});
-    Tensor z_flat(z.data, DType::BF16, {kZRows, aggregate_columns});
+    const std::int32_t channels = weight.n / 16 * 10; // 10240, or 5120 for a TP2 shard
+    const std::int32_t z_rows   = weight.n / 16 * 6;  // 6144, or 3072
+    Tensor record_flat(conv_record.data, DType::BF16, {channels, aggregate_columns});
+    Tensor z_flat(z.data, DType::BF16, {z_rows, aggregate_columns});
     launch_projection(x_flat, weight, record_flat, z_flat, plan.schedule, workspace, stream);
     gdn_projected_conv_record_launch(conv_record, conv_weight, conv_states, valid_columns,
                                      initial_slot, query, key, value, stream);

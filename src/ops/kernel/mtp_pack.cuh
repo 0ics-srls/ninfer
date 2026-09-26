@@ -23,15 +23,17 @@ __global__ void mtp_pack_fc_input_kernel(const __nv_bfloat16* embedding_norm,
     out[out_base + rows + row]  = hidden_norm[in_idx];
 }
 
+// attn_rows / q_rows / kv_rows: 14336 / 6144 / 1024, or 7168 / 3072 / 512 for a TP2 rank shard.
 __global__ void mtp_split_attn_in_kernel(const __nv_bfloat16* attn_in, __nv_bfloat16* q,
                                          __nv_bfloat16* k, __nv_bfloat16* gate, __nv_bfloat16* v,
-                                         std::int32_t tokens) {
+                                         std::int32_t tokens, int attn_rows, int kMtpQRows,
+                                         int kMtpKvRows) {
     const std::int64_t idx = blockIdx.x * static_cast<std::int64_t>(blockDim.x) + threadIdx.x;
-    const std::int64_t n   = static_cast<std::int64_t>(kMtpAttnRows) * tokens;
+    const std::int64_t n   = static_cast<std::int64_t>(attn_rows) * tokens;
     if (idx >= n) { return; }
 
-    const int row             = static_cast<int>(idx % kMtpAttnRows);
-    const int token           = static_cast<int>(idx / kMtpAttnRows);
+    const int row             = static_cast<int>(idx % attn_rows);
+    const int token           = static_cast<int>(idx / attn_rows);
     const __nv_bfloat16 value = attn_in[idx];
 
     if (row < kMtpQRows) {

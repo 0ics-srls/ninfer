@@ -135,7 +135,17 @@ enum class Nvfp4Problem : std::uint8_t {
     Residual17408,
 };
 
+#ifdef NINFER_VOLTA_BUILD
+// TP2 rank shards of the Qwen3.8-27B MLP (see fp8_config.h): shape-generic QPN routes on Volta.
+inline constexpr bool is_nvfp4_tp2_half_problem(std::int32_t output_rows, std::int32_t input_rows) {
+    return (output_rows == 17408 && input_rows == 5120) || (output_rows == 5120 && input_rows == 8704);
+}
+#endif
+
 inline constexpr bool is_nvfp4_linear_problem(std::int32_t output_rows, std::int32_t input_rows) {
+#ifdef NINFER_VOLTA_BUILD
+    if (is_nvfp4_tp2_half_problem(output_rows, input_rows)) { return true; }
+#endif
     return (output_rows == Nvfp4AttnInputGeometry::kOutputRows &&
             input_rows == Nvfp4AttnInputGeometry::kInputRows) ||
            (output_rows == Nvfp4GdnInputGeometry::kOutputRows &&
@@ -149,6 +159,11 @@ inline constexpr bool is_nvfp4_linear_problem(std::int32_t output_rows, std::int
 }
 
 inline Nvfp4Problem resolve_nvfp4_problem(std::int32_t output_rows, std::int32_t input_rows) {
+#ifdef NINFER_VOLTA_BUILD
+    if (is_nvfp4_tp2_half_problem(output_rows, input_rows)) {
+        return output_rows == 5120 ? Nvfp4Problem::Residual17408 : Nvfp4Problem::MlpGateUp;
+    }
+#endif
     if (output_rows == Nvfp4AttnInputGeometry::kOutputRows &&
         input_rows == Nvfp4AttnInputGeometry::kInputRows) {
         return Nvfp4Problem::AttnInput;

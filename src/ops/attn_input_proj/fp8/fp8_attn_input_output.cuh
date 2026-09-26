@@ -25,9 +25,30 @@ struct Fp8AttentionInputOutput {
     __nv_bfloat16* key;
     __nv_bfloat16* gate;
     __nv_bfloat16* value;
+    // Row split of the fused [Q | K | Gate | V] projection. Defaults are the full model; a TP2
+    // rank shard (7168 rows) carries 3072 / 512 (q = 3/7, k = 1/14 of the fused rows).
+    std::int32_t query_rows = kFp8AttnInputQueryRows;
+    std::int32_t key_rows   = kFp8AttnInputKeyRows;
 
     __device__ __forceinline__ __nv_bfloat16* destination(std::int32_t parent_row,
                                                           std::int32_t token) const {
+        const std::int32_t key_begin   = query_rows;
+        const std::int32_t gate_begin  = query_rows + key_rows;
+        const std::int32_t value_begin = 2 * query_rows + key_rows;
+        if (parent_row < key_begin) {
+            return query + static_cast<std::int64_t>(token) * query_rows + parent_row;
+        }
+        if (parent_row < gate_begin) {
+            return key + static_cast<std::int64_t>(token) * key_rows + parent_row - key_begin;
+        }
+        if (parent_row < value_begin) {
+            return gate + static_cast<std::int64_t>(token) * query_rows + parent_row - gate_begin;
+        }
+        return value + static_cast<std::int64_t>(token) * key_rows + parent_row - value_begin;
+    }
+
+    __device__ __forceinline__ __nv_bfloat16* destination_fixed(std::int32_t parent_row,
+                                                                std::int32_t token) const {
         if (parent_row < kFp8AttnInputKeyBegin) {
             return query + static_cast<std::int64_t>(token) * kFp8AttnInputQueryRows + parent_row;
         }

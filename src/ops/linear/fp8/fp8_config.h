@@ -158,7 +158,26 @@ enum class Fp8Problem : std::uint8_t {
     Residual17408,
 };
 
+#ifdef NINFER_VOLTA_BUILD
+// TP2 rank shards of the Qwen3.8-27B projections. Volta routes these through the shape-generic QPN
+// kernels, so they share the full-shape problem classes (route thresholds only depend on T).
+inline constexpr bool is_fp8_tp2_half_problem(std::int32_t output_rows, std::int32_t input_rows) {
+    return (output_rows == 7168 && input_rows == 5120) || (output_rows == 8192 && input_rows == 5120) ||
+           (output_rows == 17408 && input_rows == 5120) || (output_rows == 5120 && input_rows == 3072) ||
+           (output_rows == 5120 && input_rows == 8704);
+}
+inline constexpr std::int32_t fp8_tp2_full_output_rows(std::int32_t output_rows, std::int32_t input_rows) {
+    return input_rows == 5120 ? output_rows * 2 : output_rows;
+}
+inline constexpr std::int32_t fp8_tp2_full_input_rows(std::int32_t output_rows, std::int32_t input_rows) {
+    return input_rows == 5120 ? input_rows : input_rows * 2;
+}
+#endif
+
 inline constexpr bool is_fp8_linear_problem(std::int32_t output_rows, std::int32_t input_rows) {
+#ifdef NINFER_VOLTA_BUILD
+    if (is_fp8_tp2_half_problem(output_rows, input_rows)) { return true; }
+#endif
     return (output_rows == Fp8AttnInputGeometry::kOutputRows &&
             input_rows == Fp8AttnInputGeometry::kInputRows) ||
            (output_rows == Fp8GdnInputGeometry::kOutputRows &&
@@ -174,6 +193,14 @@ inline constexpr bool is_fp8_linear_problem(std::int32_t output_rows, std::int32
 }
 
 inline Fp8Problem resolve_fp8_problem(std::int32_t output_rows, std::int32_t input_rows) {
+#ifdef NINFER_VOLTA_BUILD
+    if (is_fp8_tp2_half_problem(output_rows, input_rows)) {
+        const std::int32_t n = fp8_tp2_full_output_rows(output_rows, input_rows);
+        const std::int32_t k = fp8_tp2_full_input_rows(output_rows, input_rows);
+        output_rows = n;
+        input_rows  = k;
+    }
+#endif
     if (output_rows == Fp8AttnInputGeometry::kOutputRows &&
         input_rows == Fp8AttnInputGeometry::kInputRows) {
         return Fp8Problem::AttnInput;

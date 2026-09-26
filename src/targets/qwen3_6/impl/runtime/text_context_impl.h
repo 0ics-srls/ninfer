@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 #include "targets/qwen3_6/impl/runtime/instance.h"
 #include "targets/qwen3_6/impl/runtime/text_context.h"
 #include "targets/qwen3_6/impl/runtime/workspace_recipe.h"
@@ -43,6 +45,39 @@
 #include <vector>
 
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS::schedule {
+
+// residual += o for the MTP attention output. A tensor-parallel Variant supplies
+// tp_combine_partial (o is then a row-parallel partial that must be reduced across ranks).
+// Debug: NINFER_DUMP_DIR=<dir> writes the last column of the residual after every mixer / MLP of
+// the first eager prefill as raw BF16 files (TP2 bring-up layer-by-layer comparison).
+inline void debug_dump_last_column(const Tensor& x, int layer, const char* stage, cudaStream_t s) {
+    static const char* dir = std::getenv("NINFER_DUMP_DIR");
+    static int armed_layer0_hits = 0;
+    if (dir == nullptr) { return; }
+    cudaStreamCaptureStatus cap{};
+    if (cudaStreamIsCapturing(s, &cap) != cudaSuccess || cap != cudaStreamCaptureStatusNone) { return; }
+    if (layer == 0 && stage[1] == 'i') { ++armed_layer0_hits; }
+    if (armed_layer0_hits != 1) { return; }
+    const std::size_t rows  = static_cast<std::size_t>(x.ne[0]);
+    const std::size_t bytes = rows * 2;
+    const auto* src = static_cast<const unsigned char*>(x.data) + (static_cast<std::size_t>(x.ne[1]) - 1) * bytes;
+    std::vector<unsigned char> host(bytes);
+    cudaStreamSynchronize(s);
+    cudaMemcpy(host.data(), src, bytes, cudaMemcpyDeviceToHost);
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/L%02d_%s.bin", dir, layer, stage);
+    if (FILE* f = std::fopen(path, "wb")) { std::fwrite(host.data(), 1, bytes, f); std::fclose(f); }
+}
+
+template <class V>
+void mtp_output_residual_add(const Tensor& o, Tensor& residual, cudaStream_t stream) {
+    if constexpr (requires { V::tp_combine_partial(o, residual, stream); }) {
+        V::tp_combine_partial(o, residual, stream);
+    } else {
+        ops::residual_add(o, residual, stream);
+    }
+}
+
 namespace {
 
 void copy_i32(const std::int32_t* source, Tensor& destination, cudaStream_t stream) {
@@ -411,7 +446,7 @@ void TextContext::mtp_forward_tail(Tensor& x, const Tensor& ah, const Tensor& po
     const auto post = workspace_recipe::mtp_post_attention<TextConfig>(work_, T);
     Tensor o        = post.output;
     ops::linear(a.view({kCfg.q_size, T}), *mtp_.o_proj, o, s);
-    ops::residual_add(o, x, s);
+    mtp_output_residual_add<Variant>(o, x, s);
 
     Tensor mh = post.post_mixer_hidden;
     ops::rmsnorm(x, *mtp_.post_attn_norm, kCfg.rms_eps, true, mh, s);
@@ -543,7 +578,7 @@ void TextContext::mtp_prefill_chunk(const Tensor& ids, const Tensor& hidden,
 
         Tensor o = work_.alloc(DType::BF16, {kCfg.hidden, 1});
         ops::linear(a.view({kCfg.q_size, 1}), *mtp_.o_proj, o, s);
-        ops::residual_add(o, x_last, s);
+        mtp_output_residual_add<Variant>(o, x_last, s);
 
         Tensor mh = work_.alloc(DType::BF16, {kCfg.hidden, 1});
         ops::rmsnorm(x_last, *mtp_.post_attn_norm, kCfg.rms_eps, true, mh, s);
@@ -1025,6 +1060,7 @@ void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
                     nvtx::Category::Attention, static_cast<std::uint64_t>(layer));
                 auto mixer_scope = work_.scope();
                 attn_mix(full, x, fidx, ph);
+                if (prefill) { debug_dump_last_column(x, layer, "mix", ctx_.stream); }
             }
             {
                 nvtx::ScopedRange post_mixer_range(
@@ -1032,6 +1068,7 @@ void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
                     nvtx::Category::PostMixer, static_cast<std::uint64_t>(layer));
                 auto mlp_scope = work_.scope();
                 mlp_tail(full.post_attn_norm, full.mlp, x, ph, next_projection_hints(layer));
+                if (prefill) { debug_dump_last_column(x, layer, "mlp", ctx_.stream); }
                 if constexpr (Tap::enabled) { tap.capture_layer(layer, x, ctx_.stream); }
             }
         } else {
@@ -1046,6 +1083,7 @@ void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
                     static_cast<std::uint64_t>(layer));
                 auto mixer_scope = work_.scope();
                 gdn_mix(gdn, x, gidx, ph);
+                if (prefill) { debug_dump_last_column(x, layer, "mix", ctx_.stream); }
             }
             {
                 nvtx::ScopedRange post_mixer_range(
@@ -1053,6 +1091,7 @@ void TextContext::run_layers(Tensor& x, Phase ph, Tap& tap) {
                     nvtx::Category::PostMixer, static_cast<std::uint64_t>(layer));
                 auto mlp_scope = work_.scope();
                 mlp_tail(gdn.post_attn_norm, gdn.mlp, x, ph, next_projection_hints(layer));
+                if (prefill) { debug_dump_last_column(x, layer, "mlp", ctx_.stream); }
                 if constexpr (Tap::enabled) { tap.capture_layer(layer, x, ctx_.stream); }
             }
         }

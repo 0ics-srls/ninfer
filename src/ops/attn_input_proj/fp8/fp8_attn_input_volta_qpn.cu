@@ -14,10 +14,12 @@ namespace ninfer::ops::detail {
 void launch_fp8_attn_input_volta_qpn(const Tensor& x, const Weight& weight, Tensor& query,
                                      const void* x_fp16, Tensor& gate, Tensor& key, Tensor& value,
                                      cudaStream_t stream) {
-    const Fp8AttentionInputOutput output{static_cast<__nv_bfloat16*>(query.data),
-                                         static_cast<__nv_bfloat16*>(key.data),
-                                         static_cast<__nv_bfloat16*>(gate.data),
-                                         static_cast<__nv_bfloat16*>(value.data)};
+    Fp8AttentionInputOutput output{static_cast<__nv_bfloat16*>(query.data),
+                                   static_cast<__nv_bfloat16*>(key.data),
+                                   static_cast<__nv_bfloat16*>(gate.data),
+                                   static_cast<__nv_bfloat16*>(value.data)};
+    output.query_rows = weight.n * 3 / 7; // 6144 of 14336, or 3072 of a 7168-row TP2 shard
+    output.key_rows   = weight.n / 14;    // 1024, or 512
     if (x_fp16 != nullptr) {
         launch_fp8_volta_qpn_with_fp16_activation(
             x, weight, static_cast<const half*>(x_fp16), output, weight.n, stream);

@@ -314,9 +314,15 @@ void dispatch_single_parent(const Tensor& x, const Weight& weight, Tensor& qkv, 
 
     if (weight.qtype == QType::FP8_E4M3FN_ROW_BF16S) {
         constexpr std::int32_t kHidden  = 5120;
-        constexpr std::int32_t kQkvRows = 10240;
-        constexpr std::int32_t kZRows   = 6144;
-        constexpr std::int32_t kRows    = kQkvRows + kZRows;
+#ifdef NINFER_VOLTA_BUILD
+        // 16384 fused rows, or an 8192-row TP2 rank shard (all GDN rows halve).
+        const std::int32_t tp2_gdn_scale = weight.n == 8192 ? 2 : 1;
+#else
+        constexpr std::int32_t tp2_gdn_scale = 1;
+#endif
+        const std::int32_t kQkvRows = 10240 / tp2_gdn_scale;
+        const std::int32_t kZRows = 6144 / tp2_gdn_scale;
+        const std::int32_t kRows = kQkvRows + kZRows;
         if (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8) {
             throw std::invalid_argument("FP8 gdn_input_proj admits only A16 or A8");
         }
@@ -470,12 +476,18 @@ void dispatch_single_parent_snapshot(const Tensor& x, const Weight& weight,
 
     if (weight.qtype == QType::FP8_E4M3FN_ROW_BF16S) {
         constexpr std::int32_t kHidden     = 5120;
-        constexpr std::int32_t kQueryRows  = 2048;
-        constexpr std::int32_t kKeyRows    = 2048;
-        constexpr std::int32_t kValueRows  = 6144;
-        constexpr std::int32_t kZRows      = 6144;
-        constexpr std::int32_t kChannels   = kQueryRows + kKeyRows + kValueRows;
-        constexpr std::int32_t kParentRows = kChannels + kZRows;
+#ifdef NINFER_VOLTA_BUILD
+        // 16384 fused rows, or an 8192-row TP2 rank shard (all GDN rows halve).
+        const std::int32_t tp2_gdn_scale = weight.n == 8192 ? 2 : 1;
+#else
+        constexpr std::int32_t tp2_gdn_scale = 1;
+#endif
+        const std::int32_t kQueryRows = 2048 / tp2_gdn_scale;
+        const std::int32_t kKeyRows = 2048 / tp2_gdn_scale;
+        const std::int32_t kValueRows = 6144 / tp2_gdn_scale;
+        const std::int32_t kZRows = 6144 / tp2_gdn_scale;
+        const std::int32_t kChannels = kQueryRows + kKeyRows + kValueRows;
+        const std::int32_t kParentRows = kChannels + kZRows;
         const ConvGeometry geometry        = require_snapshot_input(x, kHidden);
         if (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8) {
             throw std::invalid_argument("FP8 gdn_input_proj_conv_snapshot admits only A16 or A8");
@@ -634,12 +646,18 @@ void dispatch_single_parent_record(const Tensor& x, const Weight& weight, const 
 
     if (weight.qtype == QType::FP8_E4M3FN_ROW_BF16S) {
         constexpr std::int32_t kHidden     = 5120;
-        constexpr std::int32_t kQueryRows  = 2048;
-        constexpr std::int32_t kKeyRows    = 2048;
-        constexpr std::int32_t kValueRows  = 6144;
-        constexpr std::int32_t kZRows      = 6144;
-        constexpr std::int32_t kChannels   = kQueryRows + kKeyRows + kValueRows;
-        constexpr std::int32_t kParentRows = kChannels + kZRows;
+#ifdef NINFER_VOLTA_BUILD
+        // 16384 fused rows, or an 8192-row TP2 rank shard (all GDN rows halve).
+        const std::int32_t tp2_gdn_scale = weight.n == 8192 ? 2 : 1;
+#else
+        constexpr std::int32_t tp2_gdn_scale = 1;
+#endif
+        const std::int32_t kQueryRows = 2048 / tp2_gdn_scale;
+        const std::int32_t kKeyRows = 2048 / tp2_gdn_scale;
+        const std::int32_t kValueRows = 6144 / tp2_gdn_scale;
+        const std::int32_t kZRows = 6144 / tp2_gdn_scale;
+        const std::int32_t kChannels = kQueryRows + kKeyRows + kValueRows;
+        const std::int32_t kParentRows = kChannels + kZRows;
         const ConvGeometry geometry        = require_record_input(x, kHidden);
         if (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8) {
             throw std::invalid_argument("FP8 gdn_input_proj_conv_record admits only A16 or A8");
@@ -766,7 +784,11 @@ std::size_t gdn_input_proj_workspace_capacity_bytes(QType parent_qtype, std::int
         return detail::nvfp4_gdn_input_workspace_capacity_bytes(policy, min_tokens, max_tokens);
     }
     if (parent_qtype == QType::FP8_E4M3FN_ROW_BF16S) {
-        if (parent_rows != detail::Fp8GdnInputGeometry::kOutputRows ||
+        if ((parent_rows != detail::Fp8GdnInputGeometry::kOutputRows
+#ifdef NINFER_VOLTA_BUILD
+             && parent_rows != 8192
+#endif
+             ) ||
             input_rows != detail::Fp8GdnInputGeometry::kInputRows ||
             (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8)) {
             throw std::invalid_argument("gdn_input_proj workspace: unsupported FP8 profile");
@@ -865,7 +887,11 @@ std::size_t gdn_input_proj_conv_snapshot_workspace_capacity_bytes(
     validate_policy(policy);
     require_snapshot_capacity_domain(batch_size, min_width, max_width);
     if (parent_qtype == QType::FP8_E4M3FN_ROW_BF16S &&
-        parent_rows == detail::Fp8GdnInputGeometry::kOutputRows &&
+        (parent_rows == detail::Fp8GdnInputGeometry::kOutputRows
+#ifdef NINFER_VOLTA_BUILD
+         || parent_rows == 8192 // TP2 rank shard (workspace sized for the full shape)
+#endif
+         ) &&
         input_rows == detail::Fp8GdnInputGeometry::kInputRows &&
         (policy == LinearPolicy::A16Only || policy == LinearPolicy::AllowA8)) {
         return detail::fp8_gdn_snapshot_workspace_capacity_bytes(policy, batch_size, min_width,
@@ -921,7 +947,11 @@ std::size_t gdn_input_proj_conv_record_workspace_capacity_bytes(
     validate_policy(policy);
     require_record_capacity_domain(batch_size, min_width, max_width);
     if (parent_qtype == QType::FP8_E4M3FN_ROW_BF16S &&
-        parent_rows == detail::Fp8GdnInputGeometry::kOutputRows &&
+        (parent_rows == detail::Fp8GdnInputGeometry::kOutputRows
+#ifdef NINFER_VOLTA_BUILD
+         || parent_rows == 8192 // TP2 rank shard (workspace sized for the full shape)
+#endif
+         ) &&
         input_rows == detail::Fp8GdnInputGeometry::kInputRows &&
         (policy == LinearPolicy::A16Only || policy == LinearPolicy::AllowA8)) {
         return detail::fp8_gdn_record_workspace_capacity_bytes(policy, batch_size, min_width,

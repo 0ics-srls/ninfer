@@ -86,6 +86,10 @@ static_assert(catalog_is_closed(k27Routes, kAnyCols));
 static_assert(catalog_is_closed(k35Routes, kAnyCols));
 
 bool is_27(const Bf16GdnGatingProblem& problem) noexcept {
+#ifdef NINFER_VOLTA_BUILD
+    // The 24-head TP2 rank shard uses the same (head-count-generic) Volta SIMT routes.
+    if (problem.heads == 24 && problem.input_rows == 5120) { return true; }
+#endif
     return problem.heads == 48 && problem.input_rows == 5120;
 }
 

@@ -37,8 +37,10 @@ constexpr int k35LogicalRows = 2 * k35N;
 template <int TokenTile, int KSlice, int RowsPerBlock>
 __global__ void bf16_gdn_gating_proj_small_t_partial_kernel(
     const __nv_bfloat16* __restrict__ x, const __nv_bfloat16* __restrict__ a_weight,
-    const __nv_bfloat16* __restrict__ b_weight, float* __restrict__ partial, std::int32_t t) {
+    const __nv_bfloat16* __restrict__ b_weight, float* __restrict__ partial, std::int32_t t,
+    int n) {
     static_assert(TokenTile == kSmallTMax, "small-T token tile is fixed to 8");
+    const int logical_rows = 2 * n; // 96 (48 heads), or 48 for a 24-head TP2 shard
     static_assert(KSlice == kSmallTKSlice, "small-T K split is fixed to 512");
     static_assert(RowsPerBlock == kSmallTRowsPerBlock, "small-T rows/block mismatch");
     constexpr int kVecsPerCol = KSlice / 8;
@@ -64,9 +66,9 @@ __global__ void bf16_gdn_gating_proj_small_t_partial_kernel(
     __syncthreads();
 
     const int logical_row = static_cast<int>(blockIdx.x) * RowsPerBlock + warp;
-    if (logical_row >= kLogicalRows) { return; }
-    const bool is_b = logical_row >= kN;
-    const int row   = is_b ? logical_row - kN : logical_row;
+    if (logical_row >= logical_rows) { return; }
+    const bool is_b = logical_row >= n;
+    const int row   = is_b ? logical_row - n : logical_row;
     const __nv_bfloat16* wrow =
         (is_b ? b_weight : a_weight) + static_cast<std::int64_t>(row) * kK + k0;
 
@@ -107,7 +109,7 @@ __global__ void bf16_gdn_gating_proj_small_t_partial_kernel(
             float sum = warp_reduce_sum(acc[tt]);
             if (lane == 0) {
                 const int token      = token0 + tt;
-                partial[(static_cast<std::int64_t>(split) * t + token) * kLogicalRows +
+                partial[(static_cast<std::int64_t>(split) * t + token) * logical_rows +
                         logical_row] = sum;
             }
         }
@@ -119,24 +121,24 @@ __global__ void bf16_gdn_gating_proj_small_t_reduce_kernel(const float* __restri
                                                            const float* __restrict__ dt_bias,
                                                            float* __restrict__ g,
                                                            float* __restrict__ beta,
-                                                           std::int32_t t) {
+                                                           std::int32_t t, int n) {
     const int i =
         static_cast<int>(blockIdx.x) * static_cast<int>(blockDim.x) + static_cast<int>(threadIdx.x);
-    const int elems = kN * t;
+    const int elems = n * t;
     if (i >= elems) { return; }
 
-    const int row   = i % kN;
-    const int token = i / kN;
+    const int row   = i % n;
+    const int token = i / n;
     float acc_a     = 0.0f;
     float acc_b     = 0.0f;
 #pragma unroll
     for (int split = 0; split < kSmallTSplits; ++split) {
-        const std::int64_t base = (static_cast<std::int64_t>(split) * t + token) * kLogicalRows;
+        const std::int64_t base = (static_cast<std::int64_t>(split) * t + token) * (2 * n);
         acc_a += partial[base + row];
-        acc_b += partial[base + kN + row];
+        acc_b += partial[base + n + row];
     }
 
-    const std::int64_t out_index = static_cast<std::int64_t>(token) * kN + row;
+    const std::int64_t out_index = static_cast<std::int64_t>(token) * n + row;
     const float sp               = softplus(acc_a + dt_bias[row]);
     g[out_index]                 = -expf(A_log[row]) * sp;
     beta[out_index]              = sigmoid(acc_b);
@@ -145,10 +147,11 @@ __global__ void bf16_gdn_gating_proj_small_t_reduce_kernel(const float* __restri
 __global__ void bf16_gdn_gating_proj_gemv_kernel(const __nv_bfloat16* x,
                                                  const __nv_bfloat16* a_weight,
                                                  const __nv_bfloat16* b_weight, const float* A_log,
-                                                 const float* dt_bias, float* g, float* beta) {
+                                                 const float* dt_bias, float* g, float* beta,
+                                                 int n) {
     const int global_row = static_cast<int>(blockIdx.x);
-    const bool is_b      = global_row >= kN;
-    const int row        = is_b ? global_row - kN : global_row;
+    const bool is_b      = global_row >= n;
+    const int row        = is_b ? global_row - n : global_row;
     const auto* weight   = is_b ? b_weight : a_weight;
     __shared__ float warp_sums[kThreads / kWarpSize];
 
@@ -243,7 +246,12 @@ __global__ void bf16_gdn_gating_proj_35_simt_kernel(const __nv_bfloat16* __restr
 }
 
 void require_shape(const Weight& w, const char* name) {
-    if (w.n != kN || w.k != kK || w.shape[0] != kN || w.shape[1] != kK) {
+    const bool rows_ok = w.n == kN
+#ifdef NINFER_VOLTA_BUILD
+                         || w.n == kN / 2 // 24-head TP2 rank shard
+#endif
+        ;
+    if (!rows_ok || w.k != kK || w.shape[0] != w.n || w.shape[1] != kK) {
         throw std::invalid_argument(std::string("gdn_gating_proj: ") + name +
                                     " requires contiguous BF16 [48,5120]");
     }
@@ -405,12 +413,13 @@ void bf16_gdn_gating_proj_gemv_launch(const Tensor& x, const Weight& a_weight,
                                       cudaStream_t stream) {
     require_shape(a_weight, "a_weight");
     require_shape(b_weight, "b_weight");
-    bf16_gdn_gating_proj_gemv_kernel<<<2 * kN, kThreads, 0, stream>>>(
+    const int n = a_weight.n;
+    bf16_gdn_gating_proj_gemv_kernel<<<2 * n, kThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(x.data),
         static_cast<const __nv_bfloat16*>(a_weight.qdata),
         static_cast<const __nv_bfloat16*>(b_weight.qdata), static_cast<const float*>(A_log.data),
         static_cast<const float*>(dt_bias.data), static_cast<float*>(g.data),
-        static_cast<float*>(beta.data));
+        static_cast<float*>(beta.data), n);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -422,30 +431,31 @@ void bf16_gdn_gating_proj_small_t_split10_launch(const Tensor& x, const Weight& 
     require_shape(a_weight, "a_weight");
     require_shape(b_weight, "b_weight");
     const std::int32_t t       = x.ne[1];
+    const int n                = a_weight.n; // 48, or 24 for a TP2 shard
     const std::size_t required = static_cast<std::size_t>(kSmallTSplits) *
                                  static_cast<std::size_t>(t) *
-                                 static_cast<std::size_t>(kLogicalRows) * sizeof(float);
+                                 static_cast<std::size_t>(2 * n) * sizeof(float);
     if (workspace == nullptr || workspace_bytes < required) {
         throw std::invalid_argument("gdn_gating_proj: small-T workspace is too small");
     }
 
     dim3 partial_block(kSmallTThreads);
-    dim3 partial_grid(div_up(kLogicalRows, kSmallTRowsPerBlock), kSmallTSplits,
+    dim3 partial_grid(div_up(2 * n, kSmallTRowsPerBlock), kSmallTSplits,
                       div_up(t, kSmallTMax));
     bf16_gdn_gating_proj_small_t_partial_kernel<kSmallTMax, kSmallTKSlice, kSmallTRowsPerBlock>
         <<<partial_grid, partial_block, 0, stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const __nv_bfloat16*>(a_weight.qdata),
-            static_cast<const __nv_bfloat16*>(b_weight.qdata), static_cast<float*>(workspace), t);
+            static_cast<const __nv_bfloat16*>(b_weight.qdata), static_cast<float*>(workspace), t, n);
     CUDA_CHECK(cudaGetLastError());
 
     constexpr int kReduceThreads = 128;
-    const int reduce_elems       = kN * t;
+    const int reduce_elems       = n * t;
     const int reduce_blocks      = div_up(reduce_elems, kReduceThreads);
     bf16_gdn_gating_proj_small_t_reduce_kernel<<<reduce_blocks, kReduceThreads, 0, stream>>>(
         static_cast<const float*>(workspace), static_cast<const float*>(A_log.data),
         static_cast<const float*>(dt_bias.data), static_cast<float*>(g.data),
-        static_cast<float*>(beta.data), t);
+        static_cast<float*>(beta.data), t, n);
     CUDA_CHECK(cudaGetLastError());
 }
 

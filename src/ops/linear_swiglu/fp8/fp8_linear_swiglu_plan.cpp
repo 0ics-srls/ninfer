@@ -72,13 +72,14 @@ std::size_t materialized_workspace_bytes(std::int32_t rows, std::int32_t cols) {
 
 void launch_a16(const Tensor& x, const Weight& weight, Tensor& out, WorkspaceArena& workspace,
                 cudaStream_t stream) {
+    const std::int32_t out_rows = weight.n / 2; // 17408, or 8704 for a TP2 rank shard
 #ifdef NINFER_VOLTA_BUILD
     if (x.ne[1] >= kVoltaCutlassMinT) {
         auto scope    = workspace.scope();
         Tensor gate_up = allocate_materialized_workspace(workspace, weight.n, x.ne[1]);
         fp8_linear_swiglu_cutlass_sm70_launch(x, weight, gate_up, workspace, stream);
-        silu_mul(gate_up.slice(0, 0, kOutputRows),
-                 gate_up.slice(0, kOutputRows, kOutputRows), out, stream);
+        silu_mul(gate_up.slice(0, 0, out_rows),
+                 gate_up.slice(0, out_rows, out_rows), out, stream);
         return;
     }
 #endif
@@ -87,9 +88,9 @@ void launch_a16(const Tensor& x, const Weight& weight, Tensor& out, WorkspaceAre
         auto* input               = static_cast<std::uint8_t*>(x.data) +
                       static_cast<std::int64_t>(token_begin) * weight.k * sizeof(std::uint16_t);
         auto* output = static_cast<std::uint8_t*>(out.data) +
-                       static_cast<std::int64_t>(token_begin) * kOutputRows * sizeof(std::uint16_t);
+                       static_cast<std::int64_t>(token_begin) * out_rows * sizeof(std::uint16_t);
         Tensor input_chunk(input, DType::BF16, {weight.k, active});
-        Tensor output_chunk(output, DType::BF16, {kOutputRows, active});
+        Tensor output_chunk(output, DType::BF16, {out_rows, active});
 #ifdef NINFER_VOLTA_BUILD
         if (fp8_linear_swiglu_qpn_split_supported(weight.k, active)) {
             auto scope                    = workspace.scope();

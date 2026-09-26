@@ -176,6 +176,24 @@ Qwen3_6_27BInstance::Qwen3_6_27BInstance(std::unique_ptr<LoadedQwen3_6_27B> stab
 
 Qwen3_6_27BInstance::~Qwen3_6_27BInstance() = default;
 
+LoadedQwen3_6_27BTp2::LoadedQwen3_6_27BTp2(std::unique_ptr<Qwen3_6_27BTp2::LoadedModel> stable_model,
+                                     const EngineOptions& options)
+    : model(std::move(stable_model)), frontend(Qwen3_6_27BTp2::make_frontend(*model, options)) {}
+
+LoadedQwen3_6_27BTp2::~LoadedQwen3_6_27BTp2() = default;
+
+Qwen3_6_27BTp2Instance::Qwen3_6_27BTp2Instance(std::unique_ptr<LoadedQwen3_6_27BTp2> stable_loaded,
+                                         runtime::KvCapacityResolution resolution,
+                                         Qwen3_6_27BTp2::SequencePlan sequence_plan,
+                                         DeviceContext& device,
+                                         const StartupObserver& startup_observer)
+    : loaded(std::move(stable_loaded)), kv_capacity_resolution(resolution),
+      capacity(sequence_plan.capacity()),
+      program(Qwen3_6_27BTp2::create_program(*loaded->model, std::move(sequence_plan), device,
+                                          startup_observer)) {}
+
+Qwen3_6_27BTp2Instance::~Qwen3_6_27BTp2Instance() = default;
+
 LoadedQwen3_6_35BA3B::LoadedQwen3_6_35BA3B(
     std::unique_ptr<Qwen3_6_35BA3B::LoadedModel> stable_model, const EngineOptions& options)
     : model(std::move(stable_model)), frontend(Qwen3_6_35BA3B::make_frontend(*model, options)) {}
@@ -205,6 +223,10 @@ ConstructedTarget construct_target(const EngineOptions& options, DeviceContext& 
     if (identity.model_id == Qwen3_6_27B::model_id) {
         return construct_registered<Qwen3_6_27B, LoadedQwen3_6_27B, Qwen3_6_27BInstance>(
             options, device, reader, load_start, Qwen3_6_27B::target_key);
+    }
+    if (identity.model_id == Qwen3_6_27BTp2::qwen3_8_model_id && identity.weights_id == "nvfp4-tp2") {
+        return construct_registered<Qwen3_6_27BTp2, LoadedQwen3_6_27BTp2, Qwen3_6_27BTp2Instance>(
+            options, device, reader, load_start, Qwen3_6_27BTp2::qwen3_8_target_key);
     }
     if (identity.model_id == Qwen3_6_27B::qwen3_8_model_id) {
         return construct_registered<Qwen3_6_27B, LoadedQwen3_6_27B, Qwen3_6_27BInstance>(

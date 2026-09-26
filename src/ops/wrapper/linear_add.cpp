@@ -112,7 +112,11 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
         const bool supported = (output_rows == detail::Nvfp4Residual6144Geometry::kOutputRows &&
                                 input_rows == detail::Nvfp4Residual6144Geometry::kInputRows) ||
                                (output_rows == detail::Nvfp4Residual17408Geometry::kOutputRows &&
-                                input_rows == detail::Nvfp4Residual17408Geometry::kInputRows);
+                                input_rows == detail::Nvfp4Residual17408Geometry::kInputRows)
+#ifdef NINFER_VOLTA_BUILD
+                               || detail::is_nvfp4_tp2_half_problem(output_rows, input_rows)
+#endif
+            ;
         if (!supported || (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA4)) {
             throw std::invalid_argument("linear_add workspace: unsupported NVFP4 profile");
         }
@@ -123,7 +127,11 @@ std::size_t linear_add_workspace_capacity_bytes(QType qtype, std::int32_t output
         const bool supported = (output_rows == detail::Fp8Residual6144Geometry::kOutputRows &&
                                 input_rows == detail::Fp8Residual6144Geometry::kInputRows) ||
                                (output_rows == detail::Fp8Residual17408Geometry::kOutputRows &&
-                                input_rows == detail::Fp8Residual17408Geometry::kInputRows);
+                                input_rows == detail::Fp8Residual17408Geometry::kInputRows)
+#ifdef NINFER_VOLTA_BUILD
+                               || detail::is_fp8_tp2_half_problem(output_rows, input_rows)
+#endif
+            ;
         if (!supported || (policy != LinearPolicy::A16Only && policy != LinearPolicy::AllowA8)) {
             throw std::invalid_argument("linear_add workspace: unsupported FP8 profile");
         }
@@ -209,7 +217,11 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
         const bool supported_shape = (w.n == detail::Nvfp4Residual6144Geometry::kOutputRows &&
                                       w.k == detail::Nvfp4Residual6144Geometry::kInputRows) ||
                                      (w.n == detail::Nvfp4Residual17408Geometry::kOutputRows &&
-                                      w.k == detail::Nvfp4Residual17408Geometry::kInputRows);
+                                      w.k == detail::Nvfp4Residual17408Geometry::kInputRows)
+#ifdef NINFER_VOLTA_BUILD
+                                     || detail::is_nvfp4_tp2_half_problem(w.n, w.k)
+#endif
+            ;
         if (!supported_shape) {
             throw std::invalid_argument("nvfp4 linear_add: unsupported weight shape");
         }
@@ -228,7 +240,11 @@ void linear_add(const Tensor& x, const Weight& w, Tensor& residual_out, LinearPo
         const bool supported_shape = (w.n == detail::Fp8Residual6144Geometry::kOutputRows &&
                                       w.k == detail::Fp8Residual6144Geometry::kInputRows) ||
                                      (w.n == detail::Fp8Residual17408Geometry::kOutputRows &&
-                                      w.k == detail::Fp8Residual17408Geometry::kInputRows);
+                                      w.k == detail::Fp8Residual17408Geometry::kInputRows)
+#ifdef NINFER_VOLTA_BUILD
+                                     || detail::is_fp8_tp2_half_problem(w.n, w.k)
+#endif
+            ;
         if (!supported_shape) {
             throw std::invalid_argument("fp8 linear_add: unsupported weight shape");
         }

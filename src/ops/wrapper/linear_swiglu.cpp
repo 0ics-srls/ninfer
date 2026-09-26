@@ -51,10 +51,10 @@ std::size_t linear_swiglu_workspace_capacity_bytes(QType qtype, std::int32_t gat
         return detail::q4_linear_swiglu_capacity_workspace_bytes(
             gate_up_rows, gate_up_rows / 2, input_rows, input_rows, min_tokens, max_tokens);
     }
-    if (qtype == QType::NVFP4 && gate_up_rows == 34816 && input_rows == 5120) {
+    if (qtype == QType::NVFP4 && (gate_up_rows == 34816 || gate_up_rows == 17408) && input_rows == 5120) {
         return detail::nvfp4_linear_swiglu_workspace_capacity_bytes(policy, min_tokens, max_tokens);
     }
-    if (qtype == QType::FP8_E4M3FN_ROW_BF16S && gate_up_rows == 34816 && input_rows == 5120) {
+    if (qtype == QType::FP8_E4M3FN_ROW_BF16S && (gate_up_rows == 34816 || gate_up_rows == 17408) && input_rows == 5120) {
         return detail::fp8_linear_swiglu_workspace_capacity_bytes(policy, min_tokens, max_tokens);
     }
     throw std::invalid_argument("linear_swiglu workspace: unsupported weight format");
@@ -77,11 +77,21 @@ void linear_swiglu(const Tensor& x, const Weight& gate_up_weight, Tensor& out, L
     const bool large_shape = x.ne[0] == 5120 && out.ne[0] == 17408 && gate_up_weight.n == 34816 &&
                              gate_up_weight.k == 5120 && gate_up_weight.padded_shape[0] == 34816 &&
                              gate_up_weight.padded_shape[1] == 5120;
+#ifdef NINFER_VOLTA_BUILD
+    // TP2 rank shard of the Qwen3.8-27B MLP gate_up (NVFP4/FP8 only; Volta QPN/CUTLASS routes).
+    const bool tp2_half_shape = x.ne[0] == 5120 && out.ne[0] == 8704 && gate_up_weight.n == 17408 &&
+                                gate_up_weight.k == 5120 && gate_up_weight.padded_shape[0] == 17408 &&
+                                gate_up_weight.padded_shape[1] == 5120 &&
+                                (gate_up_weight.qtype == QType::NVFP4 ||
+                                 gate_up_weight.qtype == QType::FP8_E4M3FN_ROW_BF16S);
+#else
+    constexpr bool tp2_half_shape = false;
+#endif
     const bool w8_shape = x.ne[0] == 2048 && out.ne[0] == 6144 && gate_up_weight.n == 12288 &&
                           gate_up_weight.k == 2048 && gate_up_weight.padded_shape[0] == 12288 &&
                           gate_up_weight.padded_shape[1] == 2048;
     if (t <= 0 || x.ne[2] != 1 || x.ne[3] != 1 || out.ne[1] != t || out.ne[2] != 1 ||
-        out.ne[3] != 1 || (!large_shape && !w8_shape)) {
+        out.ne[3] != 1 || (!large_shape && !w8_shape && !tp2_half_shape)) {
         throw std::invalid_argument("linear_swiglu: invalid tensor shape");
     }
     if (!x.is_contiguous() || !out.is_contiguous()) {
@@ -104,8 +114,8 @@ void linear_swiglu(const Tensor& x, const Weight& gate_up_weight, Tensor& out, L
                            gate_up_weight.group_size == 32 && gate_up_weight.group == 32 &&
                            gate_up_weight.qhigh == nullptr &&
                            gate_up_weight.high_plane_bytes == 0 && common_row_split;
-    const bool nvfp4_weight = large_shape && gate_up_weight.qtype == QType::NVFP4;
-    const bool fp8_weight   = large_shape && gate_up_weight.qtype == QType::FP8_E4M3FN_ROW_BF16S;
+    const bool nvfp4_weight = (large_shape || tp2_half_shape) && gate_up_weight.qtype == QType::NVFP4;
+    const bool fp8_weight   = (large_shape || tp2_half_shape) && gate_up_weight.qtype == QType::FP8_E4M3FN_ROW_BF16S;
     if (!q4_weight && !w8_weight && !nvfp4_weight && !fp8_weight) {
         throw std::invalid_argument("linear_swiglu: unsupported weight");
     }

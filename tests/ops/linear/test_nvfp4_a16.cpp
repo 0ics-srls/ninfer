@@ -1,3 +1,4 @@
+#include <vector>
 #include "ops/linear/linear_test_common.h"
 
 #include <array>
@@ -36,6 +37,19 @@ int run_nvfp4_a16() {
                           {5120, 6144, 705U, Comparison::Sampled, true, new_problem_invocations});
     failures += run_shape("NVFP4_A16", ActivationCompute::A16, make_nvfp4_weight,
                           {5120, 17408, 707U, Comparison::Sampled, true, new_problem_invocations});
+#ifdef NINFER_VOLTA_BUILD
+    {
+        std::vector<Invocation> tp2_calls;
+        for (int t : {1, 2, 4, 16, 17, 33, 51, 64, 65, 128, 256, 1000, 2048})
+            tp2_calls.push_back({t, CallForm::Policy, ops::LinearPolicy::A16Only});
+        failures += run_shape("NVFP4_A16_tp2_full", ActivationCompute::A16, make_nvfp4_weight,
+                              {5120, 17408, 711U, Comparison::Sampled, true, tp2_calls});
+        failures += run_shape("NVFP4_A16_tp2", ActivationCompute::A16, make_nvfp4_weight,
+                              {5120, 8704, 713U, Comparison::Sampled, true, tp2_calls});
+        failures += run_shape("NVFP4_A16_tp2", ActivationCompute::A16, make_nvfp4_weight,
+                              {17408, 5120, 715U, Comparison::Sampled, true, tp2_calls});
+    }
+#endif
     return failures;
 }
 

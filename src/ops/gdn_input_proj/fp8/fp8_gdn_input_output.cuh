@@ -18,13 +18,16 @@ struct Fp8GdnInputOutput {
 
     __nv_bfloat16* qkv;
     __nv_bfloat16* z;
+    // Full-model defaults; a TP2 rank shard (8192 fused rows) carries 5120 / 3072.
+    std::int32_t qkv_rows = kQkvRows;
+    std::int32_t z_rows   = kZRows;
 
     __device__ __forceinline__ __nv_bfloat16* destination(std::int32_t parent_row,
                                                           std::int32_t token) const {
-        if (parent_row < kQkvRows) {
-            return qkv + static_cast<std::int64_t>(token) * kQkvRows + parent_row;
+        if (parent_row < qkv_rows) {
+            return qkv + static_cast<std::int64_t>(token) * qkv_rows + parent_row;
         }
-        return z + static_cast<std::int64_t>(token) * kZRows + parent_row - kQkvRows;
+        return z + static_cast<std::int64_t>(token) * z_rows + parent_row - qkv_rows;
     }
 
     __device__ __forceinline__ void store(std::int32_t parent_row, std::int32_t token,

@@ -322,7 +322,7 @@ std::int32_t causal_attention_split_capacity(std::int32_t q_heads, std::int32_t 
                                              KvCacheStorage cache_storage,
                                              CausalAttentionExecutionEnvelope envelope,
                                              std::int32_t batch_size) {
-    if (tokens < 1 || tokens > (q_heads == 24 ? 8 : 6) || envelope.min_visible_keys == 0 ||
+    if (tokens < 1 || tokens > ((q_heads == 24 || q_heads == 12) ? 8 : 6) || envelope.min_visible_keys == 0 ||
         envelope.min_visible_keys > envelope.max_visible_keys) {
         throw std::invalid_argument("causal_softmax_attention split capacity: invalid profile");
     }
@@ -441,13 +441,13 @@ void causal_attention_small_t_launch_for(const Tensor& q, CacheInput input, cons
         NINFER_CAUSAL_SMALL_T_DISPATCH(6, 4);
         break;
     case 7:
-        if constexpr (Geometry::QHeads == 24) {
+        if constexpr (Geometry::QHeads == 24 || Geometry::QHeads == 12) {
             NINFER_CAUSAL_SMALL_T_DISPATCH(7, 4);
             break;
         }
         throw std::invalid_argument("unsupported query-row tile");
     case 8:
-        if constexpr (Geometry::QHeads == 24) {
+        if constexpr (Geometry::QHeads == 24 || Geometry::QHeads == 12) {
             NINFER_CAUSAL_SMALL_T_DISPATCH(8, 4);
             break;
         }

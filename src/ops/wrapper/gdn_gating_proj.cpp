@@ -52,6 +52,12 @@ GdnControlParentGeometry require_bf16_parent(const Weight& parent) {
         require_bf16_weight(parent, 96, 5120, "ab_weight");
         return {.input_rows = 5120, .heads = 48};
     }
+#ifdef NINFER_VOLTA_BUILD
+    if (parent.n == 48 && parent.k == 5120) { // TP2 rank shard: 24 a rows + 24 b rows
+        require_bf16_weight(parent, 48, 5120, "ab_weight");
+        return {.input_rows = 5120, .heads = 24};
+    }
+#endif
     if (parent.n == 64 && parent.k == 2048) {
         require_bf16_weight(parent, 64, 2048, "ab_weight");
         return {.input_rows = 2048, .heads = 32};

@@ -243,6 +243,18 @@ W8Launch select_w8_launch(std::int32_t n, std::int32_t k, std::int32_t t, Linear
     switch (policy) {
     case LinearPolicy::A16Only:
     case LinearPolicy::AllowA8: {
+#ifdef NINFER_VOLTA_BUILD
+        // TP2 rank shards of the Qwen3.8-27B MTP projections are not in the exact-shape table;
+        // on Volta every route that table could pick is replaced by a shape-generic one anyway.
+        const bool tp2_half = (n == 7168 && k == 5120) || (n == 5120 && k == 3072) ||
+                              (n == 17408 && k == 5120) || (n == 5120 && k == 8704) ||
+                              (n == 3072 && k == 5120) || (n == 512 && k == 5120);
+        if (tp2_half && t > 0) {
+            if (w8_uses_volta_qpn(n, k, t)) { return launch_w8_volta_qpn; }
+            if (w8_uses_volta_mma(n, k, t)) { return launch_w8_volta_mma; }
+            return launch_w8_simt_r8_c8;
+        }
+#endif
         const W8Launch launch = select_w8_a16_launch(n, k, t);
 #ifdef NINFER_VOLTA_BUILD
         // The r4_c16 interception that used to sit here is deliberately gone. It was introduced to

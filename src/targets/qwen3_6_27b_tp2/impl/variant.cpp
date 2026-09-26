@@ -1,4 +1,4 @@
-#include "targets/qwen3_6_27b/impl/variant.h"
+#include "targets/qwen3_6_27b_tp2/impl/variant.h"
 
 #include "ninfer/ops/attn_input_proj.h"
 #include "ninfer/ops/gdn_gating_proj.h"
@@ -6,6 +6,7 @@
 #include "ninfer/ops/linear.h"
 #include "ninfer/ops/linear_add.h"
 #include "ninfer/ops/linear_pair.h"
+#include "targets/qwen3_6_27b_tp2/impl/tp2_comm.h"
 #include "ninfer/ops/linear_swiglu.h"
 #include "ninfer/ops/mtp_pack.h"
 #include "targets/qwen3_6/impl/debug_dump.h"
@@ -15,11 +16,11 @@
 #include <algorithm>
 #include <stdexcept>
 
-#define NINFER_QWEN36_VARIANT    ::ninfer::targets::qwen3_6_27b::detail::Variant
-#define NINFER_QWEN36_RUNTIME_NS qwen3_6_27b_runtime
+#define NINFER_QWEN36_VARIANT    ::ninfer::targets::qwen3_6_27b_tp2::detail::Variant
+#define NINFER_QWEN36_RUNTIME_NS qwen3_6_27b_tp2_runtime
 #include "targets/qwen3_6/impl/runtime/instantiate.h"
 
-namespace ninfer::targets::qwen3_6_27b::detail {
+namespace ninfer::targets::qwen3_6_27b_tp2::detail {
 namespace {
 
 std::vector<GraphExecutionProfile>
@@ -186,7 +187,14 @@ void Variant::attention_projection(const Tensor& hidden,
 void Variant::attention_output_projection(const Tensor& attention, const Weight& weight,
                                           Tensor& residual, qwen3_6::TextPhase,
                                           WorkspaceArena& workspace, cudaStream_t stream) {
-    ops::linear_add(attention, weight, residual, text_policy(weight), workspace, stream);
+    // Row-parallel o_proj: rank 0 adds its partial into the residual, rank 1 overwrites the
+    // residual with its partial; the all-reduce then yields residual + p0 + p1 on both ranks.
+    if (tp2::rank() == 0) {
+        ops::linear_add(attention, weight, residual, text_policy(weight), workspace, stream);
+    } else {
+        ops::linear(attention, weight, residual, text_policy(weight), workspace, stream);
+    }
+    tp2::allreduce(residual, stream);
 }
 
 void Variant::mtp_attention_projection(const Tensor& hidden,
@@ -206,7 +214,9 @@ void Variant::mtp_attention_projection(const Tensor& hidden,
 
 void Variant::mtp_kv_projection(const Tensor& hidden, const MtpAttentionProjectionWeights& weights,
                                 Tensor& key, Tensor& value, WorkspaceArena&, cudaStream_t stream) {
-    ops::linear_pair(hidden, weights.key, weights.value, key, value, stream);
+    // TP2 rank shard: 512-row K/V projections are outside linear_pair's fused 1024-row kernel.
+    ops::linear(hidden, weights.key, key, stream);
+    ops::linear(hidden, weights.value, value, stream);
 }
 
 void Variant::mtp_q_gate_projection(const Tensor& hidden,
@@ -285,7 +295,12 @@ void Variant::gdn_input_projection_record(const Tensor& hidden, const GdnProject
 void Variant::gdn_output_projection(const Tensor& hidden, const Weight& weight, Tensor& residual,
                                     qwen3_6::TextPhase, WorkspaceArena& workspace,
                                     cudaStream_t stream) {
-    ops::linear_add(hidden, weight, residual, text_policy(weight), workspace, stream);
+    if (tp2::rank() == 0) {
+        ops::linear_add(hidden, weight, residual, text_policy(weight), workspace, stream);
+    } else {
+        ops::linear(hidden, weight, residual, text_policy(weight), workspace, stream);
+    }
+    tp2::allreduce(residual, stream);
 }
 
 void Variant::gdn_norm_control_projection(const Tensor& residual, const Tensor& norm_weight,
@@ -316,8 +331,19 @@ void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, 
     debug::dump_last_column_once(hidden, "pm_hidden", stream);
     debug::dump_last_column_once(activation, "pm_act", stream);
     debug::dump_last_column_once(residual, "pm_res_in", stream);
+    if (tp2::rank() != 0) {
+        // Rank 1 contributes only its partial sum. The load step prepacks NVFP4 MLP weights for
+        // the Volta QPN route, which linear_add reads correctly at every width but linear's
+        // wide-T MMA route does not; so zero the destination and reuse linear_add.
+        CUDA_CHECK(cudaMemsetAsync(residual.data, 0,
+                                   static_cast<std::size_t>(residual.ne[0]) * residual.ne[1] *
+                                       sizeof(std::uint16_t),
+                                   stream));
+    }
     ops::linear_add(activation, weights.down, residual, text_policy(weights.down), workspace,
                     stream);
+    debug::dump_last_column_once(residual, "pm_res_partial", stream);
+    tp2::allreduce(residual, stream);
     debug::dump_last_column_once(residual, "pm_res_out", stream);
 }
 
@@ -333,7 +359,11 @@ void Variant::mtp_post_mixer(const Tensor& hidden, const MtpPostMixerWeights& we
                   stream);
     Tensor delta = workspace.alloc(DType::BF16, {TextConfig::hidden, cols});
     ops::linear(activation, weights.down, delta, stream);
-    ops::residual_add(delta, residual, stream);
+    tp2::combine_partial(delta, residual, stream);
+}
+
+void Variant::tp_combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream) {
+    tp2::combine_partial(partial, residual, stream);
 }
 
 std::size_t Variant::mtp_attention_projection_workspace_capacity_bytes(std::int32_t first,
@@ -513,7 +543,7 @@ std::size_t Variant::post_mixer_workspace_capacity_bytes(WeightsProfile weights_
         return std::max(nvfp4, fp8);
     }
     }
-    throw std::invalid_argument("qwen3_6_27b: invalid weights profile");
+    throw std::invalid_argument("qwen3_6_27b_tp2: invalid weights profile");
 }
 
 std::size_t Variant::mtp_post_mixer_workspace_capacity_bytes(std::int32_t first,
@@ -526,4 +556,4 @@ std::size_t Variant::mtp_post_mixer_workspace_capacity_bytes(std::int32_t first,
     return layout.peak_bytes(1);
 }
 
-} // namespace ninfer::targets::qwen3_6_27b::detail
+} // namespace ninfer::targets::qwen3_6_27b_tp2::detail
