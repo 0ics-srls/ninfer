@@ -15,7 +15,7 @@ Qwen3.8-27B on Tesla V100s: rewritten sm70 attention kernels + N-GPU tensor para
 
 Decode numbers at 186K/193K are the mean of 4 seeds × 1024 generated tokens on one fixed prompt; 8K numbers are single 256-token runs. Quality: 237/300 on our public [model-evaluation](https://github.com/huangserva/model-evaluation) core-300 set versus 245 (llama.cpp Q4_K_M) and 238 (Q8_0) on a 4090, differences within noise (paired McNemar p=0.20 / p=1.0).
 
-What changed versus upstream is listed in [CHANGES.md](CHANGES.md); the design notes are in [docs/tp2-design-notes.md](docs/tp2-design-notes.md); the upstream README is kept as [docs/UPSTREAM-README.md](docs/UPSTREAM-README.md).
+The Volta substitutes for the hardware V100 lacks (llama.cpp's Volta flash kernel for prefill, an m8n8k4-based decode attention kernel, software NVFP4 dequant into FP16 tensor cores) come from upstream ninfer-v100. This repo rewrites the slowest of them, the INT8 decode attention kernel, retunes the prefill kernel and adds tensor parallel; the model's attention math is unchanged. What changed versus upstream is listed in [CHANGES.md](CHANGES.md); the design notes are in [docs/tp2-design-notes.md](docs/tp2-design-notes.md); the upstream README is kept as [docs/UPSTREAM-README.md](docs/UPSTREAM-README.md).
 
 ## 这是什么
 
@@ -44,7 +44,9 @@ NInfer 官方只支持 RTX 5090。社区的 [ninfer-v100](https://github.com/geo
 
 ## 改了什么
 
-三块，都在 [CHANGES.md](CHANGES.md) 里按文件列出。
+先说清楚起点。V100 缺的那些指令（ldmatrix、m16n8k16、cp.async、bf16 张量核）的替代方案，包括用 llama.cpp 的 Volta flash 内核读 prompt、按 m8n8k4 重建的生成 attention 内核、软件 NVFP4 解压进 FP16 张量核，都是上游 ninfer-v100 做的。本仓库改的是这套替代方案里最慢的那段生成 attention 内核，调了读 prompt 内核的参数，再加上双卡。模型的 attention 算法没有改。
+
+本仓库的改动分三块，都在 [CHANGES.md](CHANGES.md) 里按文件列出。
 
 **sm70 内核（单卡也生效）**
 
