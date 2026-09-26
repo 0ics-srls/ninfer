@@ -20,6 +20,9 @@ void launch_nvfp4_small_t(const Tensor& x, const Weight& weight, Tensor& out, cu
 inline constexpr std::int32_t kNvfp4VoltaQpnRowsPerTile = 8;
 inline constexpr std::int32_t kNvfp4VoltaQpnMaxTokens   = 32;
 void launch_nvfp4_volta_qpn(const Tensor&, const Weight&, Tensor&, cudaStream_t);
+// x_fp16: the same activation pre-staged to fp16 (see fp8_stage_bf16_activation_sm70).
+void launch_nvfp4_volta_qpn_fp16(const Tensor& x, const void* x_fp16, const Weight&, Tensor&,
+                                 cudaStream_t);
 [[nodiscard]] bool nvfp4_volta_qpn_supported(std::int32_t n, std::int32_t k,
                                              std::int32_t t) noexcept;
 
