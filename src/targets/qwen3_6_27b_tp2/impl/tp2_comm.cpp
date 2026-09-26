@@ -1,4 +1,5 @@
 #include "targets/qwen3_6_27b_tp2/impl/tp2_comm.h"
+#include "runtime/engine/tp_lockstep.h"
 
 #include "core/device.h" // CUDA_CHECK
 #include "ninfer/ops/residual_add.h"
@@ -81,6 +82,8 @@ void init() {
     g_comm = comm;
     g_rank = rank;
     std::fprintf(stderr, "[ninfer] TP2 rank %d/2 ready (NCCL %d)\n", rank, NCCL_VERSION_CODE);
+    // Create/attach the per-unit lockstep block now so both ranks agree on its lifetime.
+    (void)::ninfer::runtime::tp::Lockstep::instance();
 }
 
 int rank() { return g_rank; }
