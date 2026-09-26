@@ -44,7 +44,19 @@ std::int32_t causal_small_t_split_upper_bound(std::int32_t window) {
     include_tier(4096, 64 / Geometry::SmallTSplitScale);
     if (window > 4096) { include_tier(8198, 128 / Geometry::SmallTSplitScale); }
     if (window > 8198) { include_tier(16390, 256 / Geometry::SmallTSplitScale); }
-    if (window > 16390) { include_tier(window, 480 / Geometry::SmallTSplitScale); }
+    if (window > 16390) {
+        // Tuning hook: NINFER_SM70_LONG_SPLIT_KEYS overrides the long-window keys per split.
+        static const std::int32_t long_keys = [] {
+            const char* v = std::getenv("NINFER_SM70_LONG_SPLIT_KEYS");
+            return v != nullptr ? std::atoi(v) : 0;
+        }();
+        // The TP2 12/2 shard halves the work per split; at the 480/scale default a 241664-key
+        // envelope gives ~1000 splits of ~185 live keys at 186K and the reduce dominates.
+        // 1920 keys measured 932 -> 662 us (T=4, 186K) and plateaus from 1440 up.
+        constexpr std::int32_t kDefaultLongKeys =
+            Geometry::QHeads == 12 ? 1920 : 480 / Geometry::SmallTSplitScale;
+        include_tier(window, long_keys > 0 ? long_keys : kDefaultLongKeys);
+    }
 
     return (splits < Geometry::SmallTMaximumSplits) ? splits : Geometry::SmallTMaximumSplits;
 }
