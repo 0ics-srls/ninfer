@@ -45,6 +45,7 @@ class Supervisor:
                     "NINFER_TP_ID_FILE": self.args.id_file,
                     "NINFER_TP_LOCKSTEP_FILE": self.args.lockstep_file,
                     "NINFER_TP_LOCKSTEP_TIMEOUT_S": str(self.args.lockstep_timeout),
+                    "NINFER_TP_MAILBOX_FILE": self.args.lockstep_file + ".mailbox",
                     "NCCL_P2P_DISABLE": "1"})
         if r == 1:
             for kv in self.args.rank1_env:   # test hooks only
