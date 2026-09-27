@@ -40,7 +40,7 @@ void tiled_projection(const Tensor& x, const Weight& weight, Tensor& out, cudaSt
     using Geometry            = W8LinearGeometry<kRows, InputRows>;
     using Schedule            = W8SmallTMmaSchedule<Warps, TileColumns, Warps == 8 ? 2 : 3,
                                                     W8SmallTMmaScaleAccess::Shared, Activation>;
-    constexpr int SharedBytes = TileColumns > 64 ? sizeof(W8SmallTMmaSharedStorage<Schedule>) : 0;
+    constexpr int SharedBytes = static_cast<int>(w8_small_t_smem_bytes<Schedule, TileColumns, true>());
     if constexpr (SharedBytes > 0) {
         static const cudaError_t attribute = cudaFuncSetAttribute(
             w8_small_t_mma_kernel<Geometry, TileColumns, Schedule, W8ContiguousOutput,

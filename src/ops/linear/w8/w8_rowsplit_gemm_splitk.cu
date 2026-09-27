@@ -39,8 +39,8 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& out, cuda
     using Schedule = W8SmallTMmaSchedule<KWarps, TileCols, MinBlocks, ScaleAccess, ActivationCache>;
     static_assert((kRows % kRowsPerCta) == 0);
     const W8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), kRows};
-    w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule>
-        <<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+        W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, W8ContiguousOutput, W8SmallTMmaStoreEpilogue, W8SmallTMmaIdentityRows, false>), (w8_small_t_smem_bytes<Schedule>()));
+    w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule><<<kRows / kRowsPerCta, Schedule::kThreads, w8_small_t_smem_bytes<Schedule>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output);
@@ -65,8 +65,8 @@ void require_problem(const Tensor& x, const Weight& w, const Tensor& out) {
 template <int TileCols, int KSplits, int NGroups, int MinBlocks>
 void launch_medium(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
     const W8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), kRows};
-    w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks>
-        <<<kRows / kRowsPerCta, KSplits * NGroups * 32, 0, stream>>>(
+        W8_SMEM_OPT_IN((w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks, W8ContiguousOutput, false>), (w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>()));
+    w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks><<<kRows / kRowsPerCta, KSplits * NGroups * 32, w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
             static_cast<const std::uint8_t*>(w.scales), output, x.ne[1]);
 }

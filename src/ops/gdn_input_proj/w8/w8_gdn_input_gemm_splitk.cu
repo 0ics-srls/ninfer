@@ -281,8 +281,8 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& qkv, Tens
     using Schedule = W8SmallTMmaDefaultSchedule<TileCols, ActiveCols>;
     static_assert((8192 % kRowsPerCta) == 0 && (4096 % kRowsPerCta) == 0);
     const Output output{static_cast<__nv_bfloat16*>(qkv.data), static_cast<__nv_bfloat16*>(z.data)};
-    w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule>
-        <<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+        W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, Output, W8SmallTMmaStoreEpilogue, W8SmallTMmaIdentityRows, false>), (w8_small_t_smem_bytes<Schedule>()));
+    w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule><<<kRows / kRowsPerCta, Schedule::kThreads, w8_small_t_smem_bytes<Schedule>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output);
@@ -320,8 +320,9 @@ void launch_active_cols_conv(const Tensor& x, const Weight& weight, const Tensor
         },
         static_cast<__nv_bfloat16*>(z.data),
     };
+    W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, Output, W8GdnSplitKConvEpilogue<Publish>, W8SmallTMmaIdentityRows, false>), (w8_small_t_smem_bytes<Schedule>()));
     w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, Output, W8GdnSplitKConvEpilogue<Publish>>
-        <<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+        <<<kRows / kRowsPerCta, Schedule::kThreads, w8_small_t_smem_bytes<Schedule>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), ignored_output, epilogue);

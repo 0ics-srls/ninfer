@@ -14,23 +14,41 @@ struct LaunchConfig {
     cudaStream_t stream            = nullptr;
 };
 
+// sm89 port: programmatic dependent launches (griddepcontrol) are sm_90+;
+// on earlier devices fall back to ordinary serialized launches, which give
+// the same correctness (kernel boundary = full dependency barrier).
+inline bool programmatic_launch_supported() {
+    static const bool supported = [] {
+        int major = 0;
+        if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, 0) != cudaSuccess) {
+            return false;
+        }
+        return major >= 9;
+    }();
+    return supported;
+}
+
 // Launches a consumer kernel as a programmatic dependent of the immediately preceding producer
 // kernel in the same stream. Every consumer control path that reads producer output must first call
 // wait_for_dependencies().
 template <class... KernelArgs, class... CallArgs>
 [[nodiscard]] inline cudaError_t
 launch_dependent(const LaunchConfig& launch, void (*kernel)(KernelArgs...), CallArgs&&... args) {
-    cudaLaunchAttribute attribute{};
-    attribute.id = cudaLaunchAttributeProgrammaticStreamSerialization;
-    attribute.val.programmaticStreamSerializationAllowed = 1;
-
     cudaLaunchConfig_t config{};
     config.gridDim          = launch.grid;
     config.blockDim         = launch.block;
     config.dynamicSmemBytes = launch.dynamic_smem_bytes;
     config.stream           = launch.stream;
-    config.attrs            = &attribute;
-    config.numAttrs         = 1;
+    config.attrs            = nullptr;
+    config.numAttrs         = 0;
+
+    cudaLaunchAttribute attribute{};
+    if (programmatic_launch_supported()) {
+        attribute.id = cudaLaunchAttributeProgrammaticStreamSerialization;
+        attribute.val.programmaticStreamSerializationAllowed = 1;
+        config.attrs    = &attribute;
+        config.numAttrs = 1;
+    }
 
     return cudaLaunchKernelEx(&config, kernel, std::forward<CallArgs>(args)...);
 }
@@ -44,14 +62,14 @@ launch_dependent(const LaunchConfig& launch, void (*kernel)(KernelArgs...), Call
 // ordinary stream sequencing. These two calls become no-ops rather than relying on the intrinsics
 // being defined (and inert) for every arch, which is unverified for the sm_70/CUDA 12.8 toolchain.
 __device__ __forceinline__ void trigger_dependents() {
-#if __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
     cudaTriggerProgrammaticLaunchCompletion();
 #endif
 }
 
 // Call on every consumer control path before its first access to producer-dependent data.
 __device__ __forceinline__ void wait_for_dependencies() {
-#if __CUDA_ARCH__ >= 900
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
     cudaGridDependencySynchronize();
 #endif
 }

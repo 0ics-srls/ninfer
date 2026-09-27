@@ -134,8 +134,15 @@ __device__ __forceinline__ void mma_s8(int& c0, int& c1, int& c2, int& c3, unsig
 __device__ __forceinline__ void mma_fp8_e4m3(float& c0, float& c1, float& c2, float& c3,
                                              unsigned a0, unsigned a1, unsigned a2, unsigned a3,
                                              unsigned b0, unsigned b1) {
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 890
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+    // kind::f8f6f4 qualified form requires sm_90+.
     asm volatile("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
+                 "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+                 : "+f"(c0), "+f"(c1), "+f"(c2), "+f"(c3)
+                 : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 890
+    // sm89 port: Ada has FP8 tensor cores but only the unqualified m16n8k32 form.
+    asm volatile("mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32 "
                  "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
                  : "+f"(c0), "+f"(c1), "+f"(c2), "+f"(c3)
                  : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
@@ -175,6 +182,7 @@ __device__ __forceinline__ void mma_tf32(float& c0, float& c1, float& c2, float&
                   __float_as_uint(a3), __float_as_uint(b0), __float_as_uint(b1));
 }
 
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
 __device__ __forceinline__ void mma_nvfp4_e4m3(float& c0, float& c1, float& c2, float& c3,
                                                unsigned a0, unsigned a1, unsigned a2, unsigned a3,
                                                unsigned b0, unsigned b1, unsigned sfa,
@@ -208,5 +216,18 @@ __device__ __forceinline__ void mma_nvfp4_e4m3(float& c0, float& c1, float& c2, 
     __trap();
 #endif
 }
+#else
+// sm89 port: FP4 block-scale MMA is Blackwell-only. Zero-fill so NVFP4 kernels
+// still compile on sm_89; those kernels are unreachable with groupwise-int
+// weights, which is the only profile a sm_89 build can serve.
+__device__ __forceinline__ void mma_nvfp4_e4m3(float& c0, float& c1, float& c2, float& c3,
+                                               unsigned, unsigned, unsigned, unsigned,
+                                               unsigned, unsigned, unsigned, unsigned) {
+    c0 = 0.0F;
+    c1 = 0.0F;
+    c2 = 0.0F;
+    c3 = 0.0F;
+}
+#endif
 
 } // namespace ninfer::ops

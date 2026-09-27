@@ -13,6 +13,14 @@
 
 namespace ninfer::ops::detail {
 
+// sm89 port: code/activation staging exceeds the 48 KB static shared cap on
+// Ada; both tiles live in one dynamic shared-memory allocation instead.
+template <int TileCols, int KSplits, int NGroups>
+constexpr unsigned w8_rowsplit_medium_t_splitk_smem_bytes() {
+    return 16 * (KSplits * 64)
+           + static_cast<unsigned>(KSplits * NGroups * (TileCols / NGroups) * 64 * 2);
+}
+
 template <int Hidden, int TileCols, int KSplits, int NGroups, int MinBlocks, class Output,
           bool AddResidual = false>
 __global__
@@ -41,8 +49,10 @@ __launch_bounds__(KSplits* NGroups * 32, MinBlocks) void w8_rowsplit_medium_t_sp
     static_assert(TileCols % NGroups == 0 && kWarpCols % 8 == 0);
     static_assert(Hidden % kGroupK == 0 && kKernelWarps <= 32);
 
-    __shared__ __align__(16) std::uint8_t code_shared[kMmaRows][kGroupK];
-    __shared__ __align__(16) __nv_bfloat16 b_shared[kKernelWarps][kWarpCols * kTileK];
+    extern __shared__ __align__(16) std::uint8_t w8_splitk_smem[];
+    auto* code_shared = reinterpret_cast<std::uint8_t (*)[kGroupK]>(w8_splitk_smem);
+    auto* b_shared    = reinterpret_cast<__nv_bfloat16 (*)[kWarpCols * kTileK]>(w8_splitk_smem
+                                                                             + kMmaRows * kGroupK);
 
     const int tid        = static_cast<int>(threadIdx.x);
     const int warp       = tid >> 5;

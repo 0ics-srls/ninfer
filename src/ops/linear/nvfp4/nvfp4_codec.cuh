@@ -12,9 +12,19 @@
 namespace ninfer::ops::detail {
 
 __device__ __forceinline__ float2 decode_nvfp4_e2m1x2(std::uint8_t storage) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
     __nv_fp4x2_e2m1 value;
     value.__x = storage;
     return static_cast<float2>(value);
+#else
+    // sm89 port: FP4 hardware conversions are Blackwell-only; software LUT with
+    // identical e2m1 semantics. Unreachable without NVFP4 weights resident.
+    static constexpr float kE2m1Lut[16] = {
+        0.0F, 0.5F, 1.0F, 1.5F, 2.0F, 3.0F, 4.0F, 6.0F,
+        -0.0F, -0.5F, -1.0F, -1.5F, -2.0F, -3.0F, -4.0F, -6.0F,
+    };
+    return float2{kE2m1Lut[storage & 0xF], kE2m1Lut[(storage >> 4) & 0xF]};
+#endif
 }
 
 __device__ __forceinline__ float decode_nvfp4_e4m3(std::uint8_t storage) {
@@ -33,11 +43,9 @@ static_assert(alignof(Nvfp4QuantizedK16) == 8);
 
 __device__ __forceinline__ void
 pack_nvfp4_e2m1x16(const float2 (&values)[8], std::uint32_t& codes_lo, std::uint32_t& codes_hi) {
-// cvt.e2m1x2 is native FP4 hardware, Blackwell-only -- Volta has no FP4 hardware at all,
-// so unlike the mma.cuh helpers this isn't "no SIMT replacement built yet", it's simply
-// never going to have one. Already permanently out of scope (see docs/v100.md);
-// this only needs a guard so ptxas doesn't reject the PTX outright at compile time.
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+// cvt.e2m1x2 is native FP4 hardware, Blackwell-only: Volta has no FP4 hardware at all and
+// Ada has none either (FP8 only). The guard keeps ptxas from rejecting the PTX on sm_70/sm_89.
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1000
     asm volatile("{\n"
                  ".reg .b8 b0;\n"
                  ".reg .b8 b1;\n"
@@ -64,6 +72,8 @@ pack_nvfp4_e2m1x16(const float2 (&values)[8], std::uint32_t& codes_lo, std::uint
                    "f"(values[4].x), "f"(values[4].y), "f"(values[5].x), "f"(values[5].y),
                    "f"(values[6].x), "f"(values[6].y), "f"(values[7].x), "f"(values[7].y));
 #else
+    // sm89 port: FP4 pack is Blackwell-only; quantization kernels never run
+    // without NVFP4 weights, so trap instead of emitting unsupported PTX.
     (void)values;
     codes_lo = 0;
     codes_hi = 0;

@@ -64,9 +64,10 @@ void launch_active_cols(const Tensor& x, const Weight& w, Tensor& out, cudaStrea
     const W8ContiguousOutput ignored_output{static_cast<__nv_bfloat16*>(out.data), kIntermediate};
     const W8SwiGluExactTEpilogue epilogue{static_cast<__nv_bfloat16*>(out.data), kIntermediate};
     const W8SwiGluExactTRows row_policy{kIntermediate};
+        W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, W8ContiguousOutput,
+                          W8SwiGluExactTEpilogue, W8SwiGluExactTRows, true>), (w8_small_t_smem_bytes<Schedule>()));
     w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, W8ContiguousOutput,
-                          W8SwiGluExactTEpilogue, W8SwiGluExactTRows, true>
-        <<<kIntermediate / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+                          W8SwiGluExactTEpilogue, W8SwiGluExactTRows, true><<<kIntermediate / kRowsPerCta, Schedule::kThreads, w8_small_t_smem_bytes<Schedule>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(w.qdata),
             static_cast<const std::uint8_t*>(w.scales), ignored_output, epilogue, row_policy);
 }

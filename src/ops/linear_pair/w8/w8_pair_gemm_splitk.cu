@@ -74,8 +74,10 @@ void launch_active_cols(const Tensor& x, const Weight& first_weight, const Weigh
     const W8ContiguousOutput ignored{static_cast<__nv_bfloat16*>(first_out.data), kRows};
     const W8PairExactTEpilogue epilogue{static_cast<__nv_bfloat16*>(first_out.data),
                                         static_cast<__nv_bfloat16*>(second_out.data)};
+        W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, W8ContiguousOutput, W8PairExactTEpilogue,
+                          W8PairExactTRows, false>), (w8_small_t_smem_bytes<Schedule>()));
     w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, W8ContiguousOutput, W8PairExactTEpilogue,
-                          W8PairExactTRows><<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+                          W8PairExactTRows><<<kRows / kRowsPerCta, Schedule::kThreads, w8_small_t_smem_bytes<Schedule>(), stream>>>(
         static_cast<const __nv_bfloat16*>(x.data), first_codes, first_scales, ignored, epilogue,
         W8PairExactTRows{});
 }
@@ -101,8 +103,8 @@ void launch_medium(const Tensor& x, const Weight& first_weight, const Weight& se
     }
     const PairOutput output{static_cast<__nv_bfloat16*>(first_out.data),
                             static_cast<__nv_bfloat16*>(second_out.data)};
-    w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks>
-        <<<(2 * kRows) / 16, KSplits * NGroups * 32, 0, stream>>>(
+        W8_SMEM_OPT_IN((w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks, PairOutput, false>), (w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>()));
+    w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks><<<(2 * kRows) / 16, KSplits * NGroups * 32, w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data), first_codes, first_scales, output, x.ne[1]);
 }
 

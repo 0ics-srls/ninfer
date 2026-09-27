@@ -32,9 +32,11 @@ void launch_tile(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_
     const W8SwiGluDirectEpilogue epilogue{static_cast<__nv_bfloat16*>(out.data), kIntermediate};
     const RowPolicy row_policy{};
     constexpr int kBlocks = kIntermediate / RowPolicy::kOutputRowsPerCta;
+    W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, Capacity, Schedule, W8ContiguousOutput,
+                          W8SwiGluDirectEpilogue, RowPolicy, true, true>), (w8_small_t_smem_bytes<Schedule, Capacity, true>()));
     w8_small_t_mma_kernel<Geometry, Capacity, Schedule, W8ContiguousOutput,
                           W8SwiGluDirectEpilogue, RowPolicy, true, true>
-        <<<kBlocks, Schedule::kThreads, 0, stream>>>(
+        <<<kBlocks, Schedule::kThreads, static_cast<unsigned>(w8_small_t_smem_bytes<Schedule, Capacity, true>()), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), ignored_output, epilogue, row_policy, x.ne[1]);

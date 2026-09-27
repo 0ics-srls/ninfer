@@ -42,9 +42,11 @@ void launch_small(const Tensor& x, const Weight& weight, Tensor& q, Tensor& k, T
     const Output output{static_cast<__nv_bfloat16*>(q.data), static_cast<__nv_bfloat16*>(k.data),
                         static_cast<__nv_bfloat16*>(v.data)};
     constexpr int kBlocks = Geometry::kOutputRows / Schedule::kRowsPerCta;
+    W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, Columns, Schedule, Output, W8SmallTMmaStoreEpilogue,
+                          W8SmallTMmaIdentityRows, false, !Exact>), (w8_small_t_smem_bytes<Schedule, Columns, !Exact>()));
     w8_small_t_mma_kernel<Geometry, Columns, Schedule, Output, W8SmallTMmaStoreEpilogue,
                           W8SmallTMmaIdentityRows, false, !Exact>
-        <<<kBlocks, Schedule::kThreads, 0, stream>>>(
+        <<<kBlocks, Schedule::kThreads, static_cast<unsigned>(w8_small_t_smem_bytes<Schedule, Columns, !Exact>()), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, W8SmallTMmaStoreEpilogue{},

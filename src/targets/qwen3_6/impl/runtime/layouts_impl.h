@@ -726,6 +726,15 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
     if (device.compute_capability() != 70) {
         throw std::invalid_argument("Qwen3.6 family Volta runtime requires compute capability 7.0");
     }
+#elif defined(NINFER_ADA_BUILD)
+    // Ada port: NVFP4 storage needs Blackwell FP4 conversion, absent on sm_89.
+    if (options.kv_cache == KvCacheStorage::Nvfp4Group16 ||
+        options.kv_cache == KvCacheStorage::Fp8KeyNvfp4Value) {
+        throw std::invalid_argument("NVFP4 KV-cache storage is unavailable on Ada");
+    }
+    if (device.compute_capability() != 89) {
+        throw std::invalid_argument("Qwen3.6 family Ada runtime requires compute capability 8.9");
+    }
 #else
     if (device.compute_capability() != 120) {
         throw std::invalid_argument("Qwen3.6 family runtime requires compute capability 12.0");

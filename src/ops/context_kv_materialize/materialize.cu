@@ -384,9 +384,17 @@ void launch_grouped(const Tensor& x, const Tensor& positions, const Tensor& coun
                     const Tensor& slots, DeviceLayers layers,
                     ContextKVMaterializeExecutionEnvelope envelope, const Tensor& scratch,
                     cudaStream_t stream) {
+    constexpr unsigned kSharedBytes = static_cast<unsigned>(
+        w8_small_t_smem_bytes<GroupedSchedule<Columns, KWarps>, Columns, true>());
+    if constexpr (kSharedBytes > 0) {
+        static const cudaError_t attribute =
+            cudaFuncSetAttribute(context_kv_grouped_kernel<Columns, KWarps>,
+                                 cudaFuncAttributeMaxDynamicSharedMemorySize, kSharedBytes);
+        CUDA_CHECK(attribute);
+    }
     context_kv_grouped_kernel<Columns, KWarps>
-        <<<dim3(64, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10), KWarps * 32, 0,
-           stream>>>(static_cast<const __nv_bfloat16*>(x.data),
+        <<<dim3(64, (envelope.max_count * x.ne[2] + Columns - 1) / Columns, 10), KWarps * 32,
+           kSharedBytes, stream>>>(static_cast<const __nv_bfloat16*>(x.data),
                      static_cast<const int*>(positions.data), static_cast<const int*>(counts.data),
                      static_cast<const int*>(slots.data), layers, static_cast<float*>(scratch.data),
                      x.ne[1], x.ne[2], envelope.min_count, envelope.max_count);

@@ -50,6 +50,9 @@ target_link_libraries(ninfer_artifact PUBLIC ninfer_core)
 # warpgroups to consumer warpgroups. Relocatable device code makes ptxas discard that contract, so
 # these self-contained kernels are intentionally compiled in a non-RDC archive and called through
 # host launchers from ninfer_ops.
+# sm89 port: Blackwell-only (TMA + setmaxnreg + mxf4nvf4 MMA); excluded on sm_89 where a
+# no-op stub library keeps the launcher symbols of the dispatch layer resolvable.
+if(NINFER_ENABLE_NVFP4)
 add_library(ninfer_nvfp4_non_rdc STATIC
   ops/linear/nvfp4/nvfp4_w4a4_tma.cu
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_w4a4_tma.cu)
@@ -63,6 +66,14 @@ set_target_properties(ninfer_nvfp4_non_rdc PROPERTIES
   CUDA_RESOLVE_DEVICE_SYMBOLS OFF)
 target_compile_options(ninfer_nvfp4_non_rdc PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-lineinfo>)
 target_link_libraries(ninfer_nvfp4_non_rdc PRIVATE ninfer_core CUDA::cudart CUDA::cuda_driver)
+else()
+add_library(ninfer_nvfp4_non_rdc STATIC
+  ops/linear/nvfp4/nvfp4_sm89_stub.cpp)
+ninfer_internal_includes(ninfer_nvfp4_non_rdc)
+# CUDA headers (cuda_bf16.h via the launcher declarations) need the toolkit
+# include path when the stub is compiled as plain CXX.
+target_link_libraries(ninfer_nvfp4_non_rdc PRIVATE CUDA::cudart)
+endif()
 
 # Shared mathematical Ops. The list is intentionally explicit: adding a
 # source is a build-boundary decision, not an accidental recursive-glob side effect.
@@ -386,6 +397,41 @@ endif()
 ninfer_internal_includes(ninfer_ops)
 ninfer_cuda_archive(ninfer_ops)
 target_link_libraries(ninfer_ops PUBLIC ninfer_core PRIVATE ninfer_nvfp4_non_rdc)
+
+# sm89 port: drop the NVFP4 translation units entirely; the plan/dispatch layer
+# they implement is stubbed in ops/linear/nvfp4/nvfp4_sm89_stub.cpp.
+if(NOT NINFER_ENABLE_NVFP4)
+  get_target_property(ninfer_ops_sources ninfer_ops SOURCES)
+  list(REMOVE_ITEM ninfer_ops_sources
+    ops/attn_input_proj/nvfp4/nvfp4_attn_input_decode.cu
+    ops/attn_input_proj/nvfp4/nvfp4_attn_input_small_t.cu
+    ops/attn_input_proj/nvfp4/nvfp4_attn_input_w4a4.cu
+    ops/attn_input_proj/nvfp4/nvfp4_attn_input_plan.cpp
+    ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_decode.cu
+    ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_small_t.cu
+    ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_w4a4.cu
+    ops/gdn_input_proj/nvfp4/nvfp4_gdn_input_plan.cpp
+    ops/gdn_input_proj/nvfp4/nvfp4_gdn_snapshot_decode.cu
+    ops/gdn_input_proj/nvfp4/nvfp4_gdn_snapshot_small_t.cu
+    ops/gdn_input_proj/nvfp4/nvfp4_gdn_snapshot_post.cu
+    ops/gdn_input_proj/nvfp4/nvfp4_gdn_snapshot_plan.cpp
+    ops/linear/nvfp4/nvfp4_gemv.cu
+    ops/linear/nvfp4/nvfp4_small_t.cu
+    ops/linear/nvfp4/nvfp4_w4a4.cu
+    ops/linear/nvfp4/nvfp4_dispatch.cpp
+    ops/linear_add/nvfp4/nvfp4_linear_add_decode.cu
+    ops/linear_add/nvfp4/nvfp4_linear_add_small_t.cu
+    ops/linear_add/nvfp4/nvfp4_linear_add_w4a4.cu
+    ops/linear_add/nvfp4/nvfp4_linear_add_plan.cpp
+    ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_decode.cu
+    ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_small_t.cu
+    ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_w4a4.cu
+    ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_plan.cpp
+    ops/kv_cache/append/nvfp4_launch.cu
+    ops/softmax_attention/dense/causal_cache/small_t_nvfp4.cu
+    ops/softmax_attention/dense/causal_cache/prompt_nvfp4.cu)
+  set_target_properties(ninfer_ops PROPERTIES SOURCES "${ninfer_ops_sources}")
+endif()
 
 # Product-independent text and media mechanisms.
 add_library(ninfer_text STATIC

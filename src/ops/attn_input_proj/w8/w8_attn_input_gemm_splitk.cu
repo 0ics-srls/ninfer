@@ -36,8 +36,8 @@ void launch_output(const Tensor& x, const Weight& weight, Output output, cudaStr
                                                 : 48;
     using Geometry         = W8LinearGeometry<Rows, kHidden>;
     using Schedule         = W8SmallTMmaDefaultSchedule<TileCols, ActiveCols>;
-    w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule>
-        <<<Rows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+    W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, Output, W8SmallTMmaStoreEpilogue, W8SmallTMmaIdentityRows, false>), (w8_small_t_smem_bytes<Schedule>()));
+    w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule><<<Rows / kRowsPerCta, Schedule::kThreads, w8_small_t_smem_bytes<Schedule>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output);
@@ -87,8 +87,8 @@ void launch_target_medium_cols(const Tensor& x, const Weight& weight, Tensor& q,
     const TargetOutput output{
         static_cast<__nv_bfloat16*>(q.data), static_cast<__nv_bfloat16*>(k.data),
         static_cast<__nv_bfloat16*>(gate.data), static_cast<__nv_bfloat16*>(v.data)};
-    w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks>
-        <<<kTargetRows / kRowsPerCta, KSplits * NGroups * 32, 0, stream>>>(
+        W8_SMEM_OPT_IN((w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks, TargetOutput, false>), (w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>()));
+    w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks><<<kTargetRows / kRowsPerCta, KSplits * NGroups * 32, w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, x.ne[1]);
@@ -101,8 +101,11 @@ void launch_companion_medium_cols(const Tensor& x, const Weight& weight, Tensor&
     const CompanionOutput output{static_cast<__nv_bfloat16*>(q.data),
                                  static_cast<__nv_bfloat16*>(k.data),
                                  static_cast<__nv_bfloat16*>(v.data)};
+    W8_SMEM_OPT_IN((w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks,
+                                           CompanionOutput, false>), (w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>()));
     w8_rowsplit_medium_t_splitk_kernel<kHidden, TileCols, KSplits, NGroups, MinBlocks>
-        <<<kCompanionRows / kRowsPerCta, KSplits * NGroups * 32, 0, stream>>>(
+        <<<kCompanionRows / kRowsPerCta, KSplits * NGroups * 32,
+           w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, x.ne[1]);

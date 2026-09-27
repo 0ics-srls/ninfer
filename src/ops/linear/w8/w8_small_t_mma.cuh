@@ -14,9 +14,38 @@
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <cuda_runtime.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
+
+// sm89 port: one-time opt-in for entry functions whose dynamic shared-memory
+// request exceeds the 48 KB static cap. Both arguments must be wrapped in an
+// extra pair of parentheses (template argument commas would otherwise split
+// the macro arguments). The call-site magic static initializes once per
+// kernel instantiation and is thread-safe.
+#define W8_SMEM_UNPAREN_INNER(...) __VA_ARGS__
+#define W8_SMEM_UNPAREN(x) W8_SMEM_UNPAREN_INNER x
+
+// Kernel name passes through template-argument deduction (the pattern
+// pdl.cuh uses); taking its address directly in a dependent context trips
+// EDG's "cannot determine which instance" diagnostic.
+template <class... KernelArgs>
+inline void w8_smem_opt_in_impl(void (*kernel)(KernelArgs...), unsigned smem_bytes) {
+    cudaFuncSetAttribute(reinterpret_cast<const void*>(kernel),
+                         cudaFuncAttributeMaxDynamicSharedMemorySize, smem_bytes);
+}
+
+#define W8_SMEM_OPT_IN(kexpr, smem_expr)                                                            \
+    do {                                                                                            \
+        static bool w8_smem_configured_ = false;                                                    \
+        if (!w8_smem_configured_) {                                                                 \
+            w8_smem_opt_in_impl(W8_SMEM_UNPAREN(kexpr),                                             \
+                                static_cast<unsigned>(W8_SMEM_UNPAREN(smem_expr)));                 \
+            w8_smem_configured_ = true;                                                             \
+        }                                                                                           \
+    } while (0)
 
 namespace ninfer::ops::detail {
 
@@ -72,6 +101,28 @@ struct W8SmallTMmaIdentityColumns {
     __device__ __forceinline__ int operator()(int column) const { return column; }
 };
 
+// Ada port (sm_89): static shared memory is capped at 48 KB there and several schedules stage more,
+// so on the Ada build every instantiation takes its staging buffer from dynamic shared memory.
+// Elsewhere only the wide tiled launches do, exactly as upstream. Launchers pass the byte count
+// returned here (0 = static) and opt in with W8_SMEM_OPT_IN.
+#ifdef NINFER_ADA_BUILD
+inline constexpr bool kW8SmallTAdaDynamicShared = true;
+#else
+inline constexpr bool kW8SmallTAdaDynamicShared = false;
+#endif
+
+template <int ActiveCols, bool TiledColumns>
+__host__ __device__ constexpr bool w8_small_t_dynamic_shared() {
+    return kW8SmallTAdaDynamicShared || (TiledColumns && ActiveCols > 64);
+}
+
+template <class Schedule, int ActiveCols = 1, bool TiledColumns = false>
+__host__ __device__ constexpr std::size_t w8_small_t_smem_bytes() {
+    return w8_small_t_dynamic_shared<ActiveCols, TiledColumns>()
+               ? sizeof(W8SmallTMmaSharedStorage<Schedule>)
+               : 0;
+}
+
 template <class Geometry, int ActiveCols, class Schedule, class Output,
           class Epilogue = W8SmallTMmaStoreEpilogue, class RowPolicy = W8SmallTMmaIdentityRows,
           bool DirectPairEpilogue = false, bool TiledColumns = false,
@@ -103,7 +154,7 @@ w8_small_t_mma(const __nv_bfloat16* __restrict__ x, const std::uint8_t* __restri
 
     using SharedStorage = W8SmallTMmaSharedStorage<Schedule>;
 
-    constexpr bool kDynamicShared = TiledColumns && ActiveCols > 64;
+    constexpr bool kDynamicShared = w8_small_t_dynamic_shared<ActiveCols, TiledColumns>();
     __shared__ __align__(
         16) unsigned char static_shared[kDynamicShared ? 1 : sizeof(SharedStorage)];
     extern __shared__ __align__(16) unsigned char dynamic_shared[];

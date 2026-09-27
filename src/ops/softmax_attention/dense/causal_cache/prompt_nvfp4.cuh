@@ -16,6 +16,19 @@
 
 #include <cstdint>
 
+// sm89 port: register reallocation is Hopper/Blackwell-only; on sm_89 the
+// producer/consumer split degrades to a no-op (this kernel is unreachable
+// without NVFP4 KV, which sm_89 builds never serve).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
+#define NINFER_SETMAXNREG_DEC(threads)                                                             \
+    asm volatile("setmaxnreg.dec.sync.aligned.u32 " #threads ";" : : : "memory")
+#define NINFER_SETMAXNREG_INC(threads)                                                             \
+    asm volatile("setmaxnreg.inc.sync.aligned.u32 " #threads ";" : : : "memory")
+#else
+#define NINFER_SETMAXNREG_DEC(threads) do { } while (0)
+#define NINFER_SETMAXNREG_INC(threads) do { } while (0)
+#endif
+
 namespace ninfer::ops {
 
 inline constexpr int kCausalPromptNvfp4Br              = 64;
@@ -158,7 +171,7 @@ __launch_bounds__(kCausalPromptNvfp4Threads, 1) void causal_attention_prompt_nvf
     __syncthreads();
 
     if (tid < kCausalPromptNvfp4ProducerThreads) {
-        asm volatile("setmaxnreg.dec.sync.aligned.u32 40;" : : : "memory");
+        NINFER_SETMAXNREG_DEC(40);
         const int producer_tid = tid;
         for (int kb = 0; kb < key_blocks; ++kb) {
             const std::uint32_t empty_phase = 1U ^ static_cast<std::uint32_t>(kb & 1);
@@ -179,7 +192,7 @@ __launch_bounds__(kCausalPromptNvfp4Threads, 1) void causal_attention_prompt_nvf
         return;
     }
 
-    asm volatile("setmaxnreg.inc.sync.aligned.u32 232;" : : : "memory");
+    NINFER_SETMAXNREG_INC(232);
     const int consumer_tid  = tid - kCausalPromptNvfp4ProducerThreads;
     const int consumer_warp = consumer_tid >> 5;
     const int gid           = lane >> 2;

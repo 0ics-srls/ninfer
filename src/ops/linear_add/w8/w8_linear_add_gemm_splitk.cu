@@ -40,9 +40,10 @@ void launch_active_cols(const Tensor& x, const Weight& weight, Tensor& residual_
     static_assert((kRows % kRowsPerCta) == 0);
     auto* residual = static_cast<__nv_bfloat16*>(residual_out.data);
     const W8ContiguousOutput output{residual, kRows};
+        W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, W8ContiguousOutput,
+                          W8SmallTMmaResidualEpilogue, W8SmallTMmaIdentityRows, false>), (w8_small_t_smem_bytes<Schedule>()));
     w8_small_t_mma_kernel<Geometry, ActiveCols, Schedule, W8ContiguousOutput,
-                          W8SmallTMmaResidualEpilogue>
-        <<<kRows / kRowsPerCta, Schedule::kThreads, 0, stream>>>(
+                          W8SmallTMmaResidualEpilogue><<<kRows / kRowsPerCta, Schedule::kThreads, w8_small_t_smem_bytes<Schedule>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, W8SmallTMmaResidualEpilogue{});
@@ -63,9 +64,10 @@ template <int Hidden, int TileCols, int KSplits, int NGroups, int MinBlocks>
 void launch_medium(const Tensor& x, Tensor& residual_out, const Weight& weight,
                    cudaStream_t stream) {
     const W8ContiguousOutput output{static_cast<__nv_bfloat16*>(residual_out.data), kRows};
+        W8_SMEM_OPT_IN((w8_rowsplit_medium_t_splitk_kernel<Hidden, TileCols, KSplits, NGroups, MinBlocks,
+                                       W8ContiguousOutput, true>), (w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>()));
     w8_rowsplit_medium_t_splitk_kernel<Hidden, TileCols, KSplits, NGroups, MinBlocks,
-                                       W8ContiguousOutput, true>
-        <<<kRows / kRowsPerCta, KSplits * NGroups * 32, 0, stream>>>(
+                                       W8ContiguousOutput, true><<<kRows / kRowsPerCta, KSplits * NGroups * 32, w8_rowsplit_medium_t_splitk_smem_bytes<TileCols, KSplits, NGroups>(), stream>>>(
             static_cast<const __nv_bfloat16*>(x.data),
             static_cast<const std::uint8_t*>(weight.qdata),
             static_cast<const std::uint8_t*>(weight.scales), output, x.ne[1]);

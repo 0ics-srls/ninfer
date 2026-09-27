@@ -1,16 +1,25 @@
 cmake_minimum_required(VERSION 3.28)
 
-# Upstream NInfer is compiled only for sm_120a. This port adds sm_70 (Volta /
-# Tesla V100) as a peer compile-time target. Validate before CUDA compiler detection so CMake never
+# Upstream NInfer is compiled only for sm_120a. This fork adds two peer compile-time targets:
+# sm_70 (Volta / Tesla V100, port geoffwatts/ninfer-v100) and sm_89 (Ada / RTX 4090, port
+# memoriaru/ninfer sm89-ada-port). Validate before CUDA compiler detection so CMake never
 # injects a generic host-toolchain default or accepts an unsupported target.
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES 120a CACHE STRING "CUDA architectures to build")
 endif()
-if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "120a" AND NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+if(NOT CMAKE_CUDA_ARCHITECTURES MATCHES "^(70|89|120a)$")
   message(FATAL_ERROR
-    "NInfer supports only CMAKE_CUDA_ARCHITECTURES=120a or 70 (Volta port); got "
+    "NInfer supports only CMAKE_CUDA_ARCHITECTURES=120a, 70 (Volta port) or 89 (Ada port); got "
     "'${CMAKE_CUDA_ARCHITECTURES}'")
 endif()
+# NVFP4: Blackwell runs it in hardware, the Volta port decodes it in software on FP16 tensor
+# cores. Ada has neither path yet: its NVFP4 units are replaced by aborting stubs.
+if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(70|120a)$")
+  set(NINFER_ENABLE_NVFP4 ON)
+else()
+  set(NINFER_ENABLE_NVFP4 OFF)
+endif()
+message(STATUS "NInfer: arch=${CMAKE_CUDA_ARCHITECTURES} NVFP4=${NINFER_ENABLE_NVFP4}")
 
 # __CUDA_ARCH__ is only ever defined during device-code compilation, so it can't guide
 # host-side dispatch decisions (e.g. "call the SIMT kernel instead of the mma one on
@@ -18,6 +27,9 @@ endif()
 # for host code.
 if(CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
   add_compile_definitions(NINFER_VOLTA_BUILD=1)
+endif()
+if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
+  add_compile_definitions(NINFER_ADA_BUILD=1)
 endif()
 
 project(ninfer LANGUAGES C CXX CUDA)

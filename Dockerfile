@@ -2,6 +2,8 @@
 
 FROM nvidia/cuda:13.1.2-devel-ubuntu24.04 AS build
 
+ARG CMAKE_CUDA_ARCHITECTURES=120a
+
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
@@ -20,6 +22,7 @@ COPY . .
 
 RUN cmake -S . -B /build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES} \
         -DNINFER_BUILD_APPS=ON \
         -DBUILD_TESTING=OFF \
         -DNINFER_BUILD_BENCHMARKS=OFF \
