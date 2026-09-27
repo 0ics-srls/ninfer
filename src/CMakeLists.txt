@@ -398,6 +398,14 @@ ninfer_internal_includes(ninfer_ops)
 ninfer_cuda_archive(ninfer_ops)
 target_link_libraries(ninfer_ops PUBLIC ninfer_core PRIVATE ninfer_nvfp4_non_rdc)
 
+# Ada build: the Volta port rerouted FP8 attention input (fp8_attn_input_plan.cpp) and no longer
+# calls the upstream A16 small-T MMA / GEMM launchers, whose constants it removed. They are dead
+# code in this tree (the Volta build already excludes them); keep them out of the Ada build too.
+if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
+  set_source_files_properties(ops/attn_input_proj/fp8/fp8_attn_input_a16_small_t.cu TARGET_DIRECTORY ninfer_ops PROPERTIES HEADER_FILE_ONLY ON)
+  set_source_files_properties(ops/attn_input_proj/fp8/fp8_attn_input_a16_gemm.cu TARGET_DIRECTORY ninfer_ops PROPERTIES HEADER_FILE_ONLY ON)
+endif()
+
 # sm89 port: drop the NVFP4 translation units entirely; the plan/dispatch layer
 # they implement is stubbed in ops/linear/nvfp4/nvfp4_sm89_stub.cpp.
 if(NOT NINFER_ENABLE_NVFP4)
