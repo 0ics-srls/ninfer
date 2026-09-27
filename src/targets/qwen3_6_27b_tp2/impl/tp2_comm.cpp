@@ -253,6 +253,11 @@ bool head_linear(const Tensor& hidden, const Weight& head, Tensor& out, cudaStre
     if (!head_row_view(head, g_rank * nh, nh, half)) { return false; }
     Tensor local(g_head_local, DType::BF16, {nh, t});
     if (head.qtype == QType::FP8_E4M3FN_ROW_BF16S) {
+#ifndef NINFER_VOLTA_BUILD
+        // Non-Volta rank (Ada): the FP8 row-slice launcher below is the Volta QPN kernel. Until the
+        // Ada rank has its own, fall back to the unsharded head (the caller handles false).
+        return false;
+#else
         // The public FP8 entry validates the whole-tensor plane geometry, which a row slice cannot
         // satisfy; call the QPN launcher directly (same kernel the vocabulary route uses at T<=32).
         if (head.layout != QuantLayout::VoltaQpnPrepacked || t > ops::detail::kFp8VoltaQpnMaxTokens ||
@@ -261,6 +266,7 @@ bool head_linear(const Tensor& hidden, const Weight& head, Tensor& out, cudaStre
         }
         ops::detail::fp8_stage_bf16_activation_sm70(hidden, g_head_act, stream);
         ops::detail::launch_fp8_volta_qpn_fp16(hidden, half, g_head_act, local, stream);
+#endif
     } else {
         ops::linear(hidden, half, local, stream);
     }
