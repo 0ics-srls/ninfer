@@ -406,6 +406,26 @@ if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
   set_source_files_properties(ops/attn_input_proj/fp8/fp8_attn_input_a16_gemm.cu TARGET_DIRECTORY ninfer_ops PROPERTIES HEADER_FILE_ONLY ON)
 endif()
 
+# Ada build: the Volta port rewrote these op wrappers around its sm_70 substitutes, which are
+# compiled only on Volta. Non-Volta builds compile the upstream version they replaced, kept
+# next to each one as *.upstream.cpp (upstream b88c0f6f, the last point the port synced).
+if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
+  foreach(ninfer_port_wrapper IN ITEMS
+      ops/rmsnorm_rope/rmsnorm_rope.cpp
+      ops/context_kv_materialize/context_kv_materialize.cpp
+      ops/linear_topk/linear_topk.cpp
+      ops/linear_swiglu/w8/w8_linear_swiglu_plan.cpp
+      ops/attn_input_proj/w8/w8_attn_input_plan.cpp
+      ops/dynamic_grouped_conv/bf16/bf16_dynamic_grouped_conv_prepare_plan.cpp
+      ops/dynamic_grouped_conv/w8/w8_dynamic_grouped_conv_add_plan.cpp
+      ops/wrapper/candidate_selector.cpp
+    )
+    set_source_files_properties(${ninfer_port_wrapper} TARGET_DIRECTORY ninfer_ops PROPERTIES HEADER_FILE_ONLY ON)
+    string(REPLACE ".cpp" ".upstream.cpp" ninfer_upstream_wrapper "${ninfer_port_wrapper}")
+    target_sources(ninfer_ops PRIVATE ${ninfer_upstream_wrapper})
+  endforeach()
+endif()
+
 # sm89 port: drop the NVFP4 translation units entirely; the plan/dispatch layer
 # they implement is stubbed in ops/linear/nvfp4/nvfp4_sm89_stub.cpp.
 if(NOT NINFER_ENABLE_NVFP4)
