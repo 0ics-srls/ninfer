@@ -143,8 +143,12 @@ void w8_gdn_input_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, T
         w8_gdn_input_mma_r64_c128_launch(x, weight, qkv, z, stream);
         return;
     case W8GdnInputScheduleId::SimtRowViewSplit:
+#ifdef NINFER_VOLTA_BUILD
         w8_gdn_input_simt_row_view_split_launch(x, weight, qkv, z, stream);
         return;
+#else
+        throw std::logic_error("gdn_input_proj w8: SIMT row-view route outside the Volta build");
+#endif
     case W8GdnInputScheduleId::CutlassSm70:
         // The public convenience overload documents that it needs no transient
         // workspace, so it cannot stage a dequantized parent. Degrade to the

@@ -57,20 +57,16 @@ __device__ __forceinline__ unsigned q4_small_t_bf16_pair(std::uint8_t packed) {
 }
 
 template <class Geometry, int TileCols, int ActiveCols, class Epilogue = Q4SmallTMmaStoreEpilogue,
-          class RowPolicy = Q4SmallTMmaIdentityRows>
+          class RowPolicy = Q4SmallTMmaIdentityRows, bool MaskedColumns = false>
 __launch_bounds__(256, 6) __global__
     void q4_small_t_mma_kernel(const __nv_bfloat16* __restrict__ x,
                                const std::uint8_t* __restrict__ codes,
                                const std::uint8_t* __restrict__ scales,
                                __nv_bfloat16* __restrict__ out, Epilogue epilogue = {},
-                               RowPolicy row_policy = {}) {
-// Same ldmatrix/mma.m16n8k16 story as w8_small_t_mma_kernel, and genuinely decode-relevant
-// once more (draft-head projection + linear_swiglu's fused gate/up, both now in scope with
-// MTP back in — see docs/v100.md). Unlike w8_small_t, there's no single drop-in SIMT
-// replacement here (this kernel's callers need either a plain projection or a fused SwiGLU
-// combine that q4_rowsplit_gemm_simt_kernel doesn't natively do) — so the host callers
-// compose it from the existing, already-validated q4 SIMT kernel instead of calling this
-// one, under NINFER_VOLTA_BUILD. This body still needs its own stub purely to compile.
+                               RowPolicy row_policy = {}, int columns = ActiveCols) {
+// Same ldmatrix/mma.m16n8k16 story as w8_small_t_mma_kernel. On the Volta build the host callers
+// compose this projection from the validated q4 SIMT kernel instead (see docs/v100.md); the body
+// only needs a stub there so ptxas accepts it. Ada and Blackwell compile the upstream body.
 #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
     using Schedule              = Q4DraftSmallTSchedule;
     constexpr int kHidden       = Geometry::kInputRows;
@@ -83,7 +79,7 @@ __launch_bounds__(256, 6) __global__
     constexpr int kTileCols     = TileCols;
     constexpr int kNt           = kTileCols / 8;
     static_assert(kTileCols >= 8 && kTileCols <= 32 && (kTileCols % 8) == 0);
-    static_assert(ActiveCols >= 2 && ActiveCols <= kTileCols && ActiveCols > kTileCols - 8);
+    static_assert(ActiveCols >= 1 && ActiveCols <= kTileCols && ActiveCols > kTileCols - 8);
     static_assert((kHidden % kGroupK) == 0);
     static_assert(RowPolicy::kOutputRowsPerCta <= kRowsPerCta);
 
@@ -102,13 +98,14 @@ __launch_bounds__(256, 6) __global__
     auto& x_shared     = shared.staging.activations;
     auto& scale_shared = shared.staging.scales;
 
-    const int tid     = static_cast<int>(threadIdx.x);
-    const int warp    = tid >> 5;
-    const int lane    = tid & 31;
-    const int gid     = lane >> 2;
-    const int lid     = lane & 3;
-    const int k_split = warp;
-    const int row0    = static_cast<int>(blockIdx.x) * RowPolicy::kOutputRowsPerCta;
+    const int tid          = static_cast<int>(threadIdx.x);
+    const int warp         = tid >> 5;
+    const int lane         = tid & 31;
+    const int gid          = lane >> 2;
+    const int lid          = lane & 3;
+    const int k_split      = warp;
+    const int row0         = static_cast<int>(blockIdx.x) * RowPolicy::kOutputRowsPerCta;
+    const int live_columns = MaskedColumns ? columns : ActiveCols;
 
     const auto stage_x = [&](int group_k0) {
         constexpr int kItemsPerSplit = ActiveCols * (kTileK / 8);
@@ -116,9 +113,16 @@ __launch_bounds__(256, 6) __global__
             const int col = item / (kTileK / 8);
             const int k8  = item - col * (kTileK / 8);
             auto* dst     = &x_shared[warp][col * kTileK + q4_small_t_swizzle_64(col, k8 * 8)];
-            cp_async<16>(
-                dst,
-                &x[static_cast<std::int64_t>(col) * kHidden + group_k0 + warp * kTileK + k8 * 8]);
+            if constexpr (MaskedColumns) {
+                const int source = col < live_columns ? col : 0;
+                cp_async_zfill<16>(dst,
+                                   &x[static_cast<std::int64_t>(source) * kHidden + group_k0 +
+                                      warp * kTileK + k8 * 8],
+                                   col < live_columns ? 16 : 0);
+            } else {
+                cp_async<16>(dst, &x[static_cast<std::int64_t>(col) * kHidden + group_k0 +
+                                     warp * kTileK + k8 * 8]);
+            }
         }
     };
 
@@ -241,13 +245,13 @@ __launch_bounds__(256, 6) __global__
             }
             const int col0 = nt * 8 + 2 * lid;
             if constexpr (std::is_same_v<Epilogue, Q4SmallTMmaStoreEpilogue>) {
-                if (col0 < ActiveCols) {
+                if (col0 < live_columns) {
                     out[static_cast<std::int64_t>(col0) * Geometry::kOutputRows + row0 + gid] =
                         __float2bfloat16_rn(sum.x);
                     out[static_cast<std::int64_t>(col0) * Geometry::kOutputRows + row0 + gid + 8] =
                         __float2bfloat16_rn(sum.z);
                 }
-                if (col0 + 1 < ActiveCols) {
+                if (col0 + 1 < live_columns) {
                     out[static_cast<std::int64_t>(col0 + 1) * Geometry::kOutputRows + row0 + gid] =
                         __float2bfloat16_rn(sum.y);
                     out[static_cast<std::int64_t>(col0 + 1) * Geometry::kOutputRows + row0 + gid +
@@ -265,6 +269,7 @@ __launch_bounds__(256, 6) __global__
     (void)out;
     (void)epilogue;
     (void)row_policy;
+    (void)columns;
     __trap();
 #endif // __CUDA_ARCH__ >= 800
 }

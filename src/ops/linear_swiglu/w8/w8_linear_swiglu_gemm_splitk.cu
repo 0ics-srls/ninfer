@@ -34,13 +34,14 @@ struct W8SwiGluExactTEpilogue {
     __nv_bfloat16* out;
     int rows;
 
-    template <int ActiveCols>
-    __device__ __forceinline__ void store_pair(int row, int col0, float4 projected) const {
-        if (col0 < ActiveCols) {
+    // Same contract as W8SwiGluDirectEpilogue: the core passes the live column count at run time.
+    __device__ __forceinline__ void store_pair(int row, int col0, float4 projected,
+                                               int columns) const {
+        if (col0 < columns) {
             out[static_cast<std::int64_t>(col0) * rows + row] =
                 __float2bfloat16_rn(silu(projected.x) * projected.z);
         }
-        if (col0 + 1 < ActiveCols) {
+        if (col0 + 1 < columns) {
             out[static_cast<std::int64_t>(col0 + 1) * rows + row] =
                 __float2bfloat16_rn(silu(projected.y) * projected.w);
         }

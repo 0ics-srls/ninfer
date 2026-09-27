@@ -51,6 +51,7 @@ void w8_linear_dynamic_grouped_conv_add_dispatch(const Tensor& x, const Weight& 
     const int columns = width * batch;
     require_profile(x.ne[0], width, batch);
 
+#ifdef NINFER_VOLTA_BUILD
     if (width == 8 && batch == 1 &&
         w8_volta_qpn_supported(kHidden, x.ne[0], columns)) {
         auto scope = workspace.scope();
@@ -59,6 +60,7 @@ void w8_linear_dynamic_grouped_conv_add_dispatch(const Tensor& x, const Weight& 
                                              residual, width, stream);
         return;
     }
+#endif
 
     auto scope       = workspace.scope();
     Tensor projected = workspace.alloc(DType::BF16, {kHidden, columns});
