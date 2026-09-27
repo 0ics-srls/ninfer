@@ -155,12 +155,17 @@ void w8_gdn_input_dispatch(const Tensor& x, const Weight& weight, Tensor& qkv, T
         // in-place route rather than break that contract. Every caller that
         // matters passes an arena -- the a3b leaf and the Op's own test both use
         // the policy-bearing overload -- so this is a fallback, not the norm.
+#ifdef NINFER_VOLTA_BUILD
         if (workspace == nullptr) {
             w8_gdn_input_simt_row_view_split_launch(x, weight, qkv, z, stream);
             return;
         }
         w8_gdn_input_cutlass_sm70_launch(x, weight, qkv, z, *workspace, stream);
         return;
+#else
+        (void)workspace;
+        throw std::logic_error("gdn_input_proj w8: CUTLASS sm70 route outside the Volta build");
+#endif
     }
     throw std::logic_error("W8 GDN input: unknown schedule");
 }
