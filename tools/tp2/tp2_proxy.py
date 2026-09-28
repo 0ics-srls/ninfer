@@ -154,8 +154,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def _headers_in(self):
         h = {k: v for k, v in self.headers.items() if k.lower() not in HOP and k.lower() != "host"}
-        # Heterogeneous deployment (0ics-srls): clients on localhost may omit the key; the ranks still get one.
-        if self.sup.args.inject_key and not any(k.lower() in ("authorization", "x-api-key") for k in h):
+        # Trusted-network deployment (0ics-srls): the proxy authenticates to the ranks itself, whatever the
+        # client sent (OpenCode always sends a placeholder key).
+        if self.sup.args.inject_key:
+            h = {k: v for k, v in h.items() if k.lower() not in ("authorization", "x-api-key")}
             h["Authorization"] = f"Bearer {self.sup.args.probe_key}"
         return h
 
@@ -346,7 +348,7 @@ def main():
     ap.add_argument("--binary-rank1", default=None,
                     help="rank-1 binary when the two GPUs need different builds (e.g. V100 sm_70 + RTX 4090 sm_89)")
     ap.add_argument("--inject-key", action="store_true",
-                    help="add the rank API key to client requests that carry none (localhost deployments)")
+                    help="authenticate to the ranks with the rank key, replacing any client key (trusted network)")
     ap.add_argument("--model-prefix", required=True)
     ap.add_argument("--rank-ports", default="18940,18941")
     ap.add_argument("--gpus", default="0,1")
