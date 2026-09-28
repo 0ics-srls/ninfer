@@ -210,9 +210,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with sup.count_lock:
                 sup.waiting -= 1
 
+    def _with_seed(self, body):
+        # Both ranks must sample with the same seed or the lockstep kills them at the first sampled token.
+        # A fixed --seed keeps them aligned but makes every identical request repeat itself; instead draw one
+        # per request here and send the same value to both ranks (only when the client did not choose one).
+        if not self.path.startswith("/v1/chat/completions"):
+            return body
+        try:
+            req = json.loads(body or b"{}")
+        except ValueError:
+            return body
+        if not isinstance(req, dict) or req.get("seed") is not None:
+            return body
+        req["seed"] = int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF
+        return json.dumps(req).encode()
+
     def _generate(self, body):
         sup = self.sup
         gen = sup.generation
+        body = self._with_seed(body)
         headers = self._headers_in()
         headers["Content-Length"] = str(len(body))
         conns = [http.client.HTTPConnection("127.0.0.1", sup.args.rank_ports[r], timeout=None)
