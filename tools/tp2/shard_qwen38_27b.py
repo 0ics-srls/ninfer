@@ -1,4 +1,4 @@
-"""Split a Qwen3.8-27B NInfer v2 artifact into two tensor-parallel rank artifacts.
+"""Split a Qwen3.8-27B NInfer artifact into two tensor-parallel rank artifacts (a v3 source gives v3 ranks).
 
 Rank r of 2 keeps half of every head / intermediate dimension:
   * column-parallel (split output rows N): attention qkgv, GDN qkvz, GDN a/b, a_log, dt_bias,
@@ -25,6 +25,7 @@ import torch
 from tools.artifact.container import (Artifact, ArtifactIdentity, ArtifactWriter, ResourceSpec,
                                       TensorObject, TensorSpec)
 from tools.artifact import layouts as L
+from tools.artifact.v3 import V3Writer, derive_directory
 
 TP = 2
 
@@ -145,8 +146,46 @@ def kept(name: str) -> bool:
     return not name.startswith(DROP) if DROP else True
 
 
+def build_v3(art: Artifact, prefix: str) -> None:
+    """v3 source -> v3 ranks: same ids, bindings and uses; split objects get their rank shape, row-split fused
+    objects get halved binding ranges, identity carries metadata.tensor_parallel."""
+    keep = [(raw, obj) for raw, obj in art.v3_entries if kept(obj.name)]
+    dropped = {raw["id"] for raw, obj in art.v3_entries if not kept(obj.name)}
+    rules = {raw["id"]: rule_for(obj.name) if isinstance(obj, TensorObject) else None for raw, obj in keep}
+    parted = {p["object"] for b in art.v3["bindings"].values() for p in b.get("parts", [])}
+    for oid, rule in rules.items():
+        assert not (rule and rule.axis == "cols" and oid in parted), f"K split of fused object {oid}"
+    halved = {oid for oid, rule in rules.items() if rule and rule.axis == "rows"}
+    writers = []
+    for r in range(TP):
+        objects = []
+        for raw, obj in keep:
+            rule = rules[raw["id"]]
+            objects.append({**raw, "shape": list(shard_shape(tuple(obj.shape), rule))} if rule else dict(raw))
+        directory = derive_directory(
+            art.v3, objects, dropped=dropped, halved_rows=halved,
+            metadata={"tensor_parallel": {"ranks": TP, "rank": r}},
+            provenance={"tensor_parallel_split": {"tool": "tools.tp2.shard_qwen38_27b",
+                                                  "source_artifact_id": art.artifact_id.hex()}},
+            drop_components=("dflash2",) if DROP else ())
+        writers.append(V3Writer(f"{prefix}.rank{r}.ninfer", directory))
+    for i, (raw, obj) in enumerate(keep):
+        payload = art.payload(obj)
+        rule = rules[raw["id"]]
+        for r in range(TP):
+            writers[r].write(raw["id"], shard_payload(obj, payload, rule, r) if rule else payload)
+        if rule and i % 40 == 0:
+            print(f"[{i}/{len(keep)}] {obj.name} {tuple(obj.shape)} -> {shard_shape(tuple(obj.shape), rule)}", flush=True)
+    for w in writers:
+        w.finish()
+    print("done", flush=True)
+
+
 def build(src: str, prefix: str) -> None:
     art = Artifact.open(src)
+    if art.v3 is not None:
+        build_v3(art, prefix)
+        return
     specs = []
     for obj in art.objects:
         if not kept(obj.name):
