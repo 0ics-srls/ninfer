@@ -180,7 +180,9 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
     Tensor& cache_v       = cache.v_pages;
     Tensor& cache_k_scale = cache.k_scale_pages;
     Tensor& cache_v_scale = cache.v_scale_pages;
-#ifdef NINFER_VOLTA_BUILD
+#if defined(NINFER_VOLTA_BUILD) && !defined(NINFER_ADA_BUILD)
+    // (The Volta-path build for the RTX 4090 keeps the Ampere body below: int8 m16n8k16 on Ada tensor cores reads
+    // the same group-64 cache the Volta producers write, several times faster than the Volta kernels there.)
     // sm_70: the tiled kernel below is an Ampere body (ldmatrix / mma.s8 m16n8k16). Route to the
     // fork's independent Volta SIMT int8 producer -- the DFlash2 merge dropped this reroute and
     // its include, which is why every INT8-group64 KV path (no-spec decode included) hit
