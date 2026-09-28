@@ -11,6 +11,7 @@
 #include "ops/softmax_attention/dense/causal_cache/small_t_bf16_volta.cuh"
 #include "ops/softmax_attention/dense/causal_cache/small_t_i8_volta.cuh"
 #include "ops/softmax_attention/dense/causal_cache/small_t_i8_volta_v2.cuh"
+#include "ops/softmax_attention/dense/causal_cache/small_t_i8_volta_v2d.cuh"
 #include <cstdlib>
 #endif
 #include "core/device.h" // CUDA_CHECK
@@ -65,15 +66,18 @@ std::int32_t causal_small_t_split_upper_bound(std::int32_t window) {
             Geometry::QHeads == 12 ? 1920 : 480 / Geometry::SmallTSplitScale;
         include_tier(window, long_keys > 0 ? long_keys : kDefaultLongKeys);
 #if defined(NINFER_VOLTA_BUILD) && !defined(NINFER_ADA_BUILD)
-        // One CTA per SM (8 warps, 90 KB of shared memory): round the long-window split count up to whole waves,
-        // a multiple of SMs / KV heads (NINFER_SM70_SPLIT_WAVES=0 keeps the plain count).
+        // Round the long-window split count up to whole waves of resident CTAs (two per SM with v2d),
+        // a multiple of CTAs per wave / KV heads (NINFER_SM70_SPLIT_WAVES=0 keeps the plain count).
         static const std::int32_t wave = [] {
             const char* v = std::getenv("NINFER_SM70_SPLIT_WAVES");
             if (v != nullptr && v[0] == '0') { return 0; }
             int device = 0, sms = 0;
             cudaGetDevice(&device);
             cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
-            return sms / Geometry::KVHeads;
+            // v2d runs two CTAs per SM (NINFER_SM70_ATTN_V2D=0: the one-CTA v2)
+            const char* v2d = std::getenv("NINFER_SM70_ATTN_V2D");
+            const int per_sm = (v2d != nullptr && v2d[0] == '0') ? 1 : 2;
+            return per_sm * sms / Geometry::KVHeads;
         }();
         if (wave > 0) { splits = div_up(splits, wave) * wave; }
 #endif
@@ -228,6 +232,38 @@ void launch_tc_partial_i8(const Tensor& q, CacheInput input, const Tensor& pos, 
             const char* env = std::getenv("NINFER_SM70_ATTN_V2");
             return env == nullptr || env[0] != '0';
         }();
+        static const bool use_v2d = [] {
+            const char* env = std::getenv("NINFER_SM70_ATTN_V2D");
+            return env == nullptr || env[0] != '0';
+        }();
+        if (use_v2 && use_v2d) {
+            // Two CTAs per SM (small_t_i8_volta_v2d.cuh): same contract as v2, 400 -> 470-480 GB/s on the TP2 shape.
+            const auto kernel =
+                causal_attention_small_t_tc_volta_partial_i8_v2d_kernel<Geometry, MultiBatch, Masked, CacheInput>;
+            static const cudaError_t attr = cudaFuncSetAttribute(
+                kernel, cudaFuncAttributeMaxDynamicSharedMemorySize,
+                static_cast<int>(kCausalSmallTI8VoltaV2DSmemBytes));
+            CUDA_CHECK(attr);
+            kernel<<<volta_grid, kCausalSmallTI8VoltaV2DWarps * 32, kCausalSmallTI8VoltaV2DSmemBytes,
+                     stream>>>(
+                static_cast<const __nv_bfloat16*>(q.data), input,
+                static_cast<const std::int32_t*>(pos.data),
+                static_cast<std::int8_t*>(cache_k.data), static_cast<std::int8_t*>(cache_v.data),
+                static_cast<__half*>(cache_k_scale.data), static_cast<__half*>(cache_v_scale.data),
+                static_cast<const std::int32_t*>(cache.block_tables.data),
+                invocation.valid_columns == nullptr
+                    ? nullptr
+                    : static_cast<const std::int32_t*>(invocation.valid_columns->data),
+                invocation.table_rows == nullptr
+                    ? nullptr
+                    : static_cast<const std::int32_t*>(invocation.table_rows->data),
+                cache.block_tables.ne[0], invocation.width, invocation.full_width,
+                invocation.column_begin, logical_capacity, scale,
+                static_cast<float*>(partial_acc.data), static_cast<float*>(partial_m.data),
+                static_cast<float*>(partial_l.data), ::ninfer::ops::small_t_key_window());
+            CUDA_CHECK(cudaGetLastError());
+            return;
+        }
         if (use_v2) {
             const auto kernel =
                 causal_attention_small_t_tc_volta_partial_i8_v2_kernel<Geometry, MultiBatch, Masked,
