@@ -324,6 +324,27 @@ void Variant::gdn_norm_control_projection(const Tensor& residual, const Tensor& 
 void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, Tensor& residual,
                          qwen3_6::TextPhase, const ::ninfer::ops::SparseMoeHints&,
                          WorkspaceArena& workspace, cudaStream_t stream) {
+    if (weights.gate_up.qtype == QType::W8G32_F16S) {
+        // 8-bit MLP (Q8_0 blocks): the MTP layer's flow. gate_up, SiLU(gate) * up, this rank's partial of down,
+        // then rank 0 adds it to the residual, rank 1 replaces the residual with it, and one all-reduce.
+        auto scope     = workspace.scope();
+        const int cols = static_cast<int>(hidden.ne[1]);
+        Tensor gate_up = workspace.alloc(DType::BF16, {2 * TextConfig::intermediate, cols});
+        ops::linear(hidden, weights.gate_up, gate_up, stream);
+        Tensor activation = workspace.alloc(DType::BF16, {TextConfig::intermediate, cols});
+        ops::silu_mul(gate_up.slice(0, 0, TextConfig::intermediate),
+                      gate_up.slice(0, TextConfig::intermediate, TextConfig::intermediate), activation,
+                      stream);
+        Tensor delta = workspace.alloc(DType::BF16, {TextConfig::hidden, cols});
+        ops::linear(activation, weights.down, delta, stream);
+        const bool r0 = tp2::rank() == 0;
+        debug::dump_last_column_once(hidden, r0 ? "w8_r0_hidden" : "w8_r1_hidden", stream);
+        debug::dump_last_column_once(gate_up, r0 ? "w8_r0_gate_up" : "w8_r1_gate_up", stream);
+        debug::dump_last_column_once(activation, r0 ? "w8_r0_act" : "w8_r1_act", stream);
+        debug::dump_last_column_once(delta, r0 ? "w8_r0_delta" : "w8_r1_delta", stream);
+        tp2::combine_partial(delta, residual, stream, 2);
+        return;
+    }
     auto scope        = workspace.scope();
     Tensor activation = workspace.alloc(DType::BF16, {TextConfig::intermediate, hidden.ne[1]});
     ops::linear_swiglu(hidden, weights.gate_up, activation, text_policy(weights.gate_up), workspace,
@@ -552,7 +573,12 @@ std::size_t Variant::post_mixer_workspace_capacity_bytes(WeightsProfile weights_
             post_mixer_workspace_bytes(QType::NVFP4, QType::NVFP4, kNvfp4TextPolicy, first, last);
         const std::size_t fp8 = post_mixer_workspace_bytes(
             QType::FP8_E4M3FN_ROW_BF16S, QType::FP8_E4M3FN_ROW_BF16S, kFp8TextPolicy, first, last);
-        return std::max(nvfp4, fp8);
+        // 8-bit MLP route (W8 rank artifacts): gate_up, activation and the partial, no op workspace.
+        WorkspaceLayoutBuilder w8;
+        (void)w8.alloc(DType::BF16, {2 * TextConfig::intermediate, last});
+        (void)w8.alloc(DType::BF16, {TextConfig::intermediate, last});
+        (void)w8.alloc(DType::BF16, {TextConfig::hidden, last});
+        return std::max({nvfp4, fp8, w8.peak_bytes(1)});
     }
     }
     throw std::invalid_argument("qwen3_6_27b_tp2: invalid weights profile");

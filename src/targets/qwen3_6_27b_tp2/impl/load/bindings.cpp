@@ -402,7 +402,19 @@ void bind_qwen38_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out) {
         }
         target.post_attention_norm = artifact::bind_device_tensor(
             binder, prefix + "post_attention_norm", NumericFormat::BF16, {5120});
-        if (layer < 56) {
+        // Rank artifacts may carry the text MLP at 8 bits (W8G32_F16S, the Q8_0 blocks of the same checkpoint;
+        // tools/tp2/shard_qwen38_27b.py --mlp-q8) instead of the official NVFP4/FP8 profile.
+        const artifact::ObjectDescriptor* mlp_object = binder.peek(prefix + "mlp/gate_up");
+        const bool mlp_w8 = mlp_object != nullptr &&
+                            std::holds_alternative<artifact::TensorDescriptor>(*mlp_object) &&
+                            std::get<artifact::TensorDescriptor>(*mlp_object).format ==
+                                NumericFormat::W8G32_F16S;
+        if (mlp_w8) {
+            target.mlp.gate_up = bind_weight(binder, prefix + "mlp/gate_up", NumericFormat::W8G32_F16S,
+                                             {2 * ::ninfer::ops::detail::kTp2Intermediate, 5120});
+            target.mlp.down    = bind_weight(binder, prefix + "mlp/down", NumericFormat::W8G32_F16S,
+                                             {5120, ::ninfer::ops::detail::kTp2Intermediate});
+        } else if (layer < 56) {
             target.mlp.gate_up =
                 bind_nvfp4_weight(binder, prefix + "mlp/gate_up", 2 * ::ninfer::ops::detail::kTp2Intermediate, 5120,
                                   prefix + "mlp/gate_up_projection/input_scale_divisor");

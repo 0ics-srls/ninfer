@@ -26,7 +26,7 @@ void allreduce(Tensor& residual, cudaStream_t stream, int slot = 3);
 
 // residual <- residual + sum over ranks of partial: rank 0 adds its partial, rank 1 replaces the
 // residual with its partial, then one all-reduce.
-void combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream);
+void combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream, int slot = 3);
 
 // Vocabulary-sharded output head: this rank computes rows [rank*N/2, (rank+1)*N/2) of
 // hidden x head^T and both ranks end with the full [N, T] out (bit-identical on both ranks).

@@ -38,6 +38,18 @@ void launch_w8_volta_qpn(const Tensor& x, const Weight& w, Tensor& out, cudaStre
     auto* out_data     = static_cast<__nv_bfloat16*>(out.data);
 
     const dim3 grid(static_cast<unsigned>((n + S::kColsPerCta - 1) / S::kColsPerCta));
+#ifdef NINFER_ADA_BUILD
+    // Ada: mma.m16n8k16 companion; narrow outputs split K over more warps to keep bytes in flight.
+    if (n < 16384 && k / W8RowSplitStorage::kGroupK >= 8) {
+        w8_ada_qpn_gemm_kernel<8><<<grid, 256, 0, stream>>>(
+            codes, scales, static_cast<const __nv_bfloat16*>(x.data), out_data, n, k, t, padded_groups, out_ld);
+    } else {
+        w8_ada_qpn_gemm_kernel<4><<<grid, 128, 0, stream>>>(
+            codes, scales, static_cast<const __nv_bfloat16*>(x.data), out_data, n, k, t, padded_groups, out_ld);
+    }
+    CUDA_CHECK(cudaGetLastError());
+    return;
+#endif
     // kBlk = 4 groups = 128 B, one cache line per lane per iteration; see the Q4 sibling for why
     // that, rather than an offline weight prepack, is what keeps the scattered per-lane row reads
     // off DRAM.

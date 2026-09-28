@@ -279,14 +279,14 @@ bool head_linear(const Tensor& hidden, const Weight& head, Tensor& out, cudaStre
     return true;
 }
 
-void combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream) {
+void combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream, int slot) {
     if (g_rank == 0) {
         ops::residual_add(partial, residual, stream);
     } else {
         CUDA_CHECK(cudaMemcpyAsync(residual.data, partial.data, residual.bytes(),
                                    cudaMemcpyDeviceToDevice, stream));
     }
-    allreduce(residual, stream);
+    allreduce(residual, stream, slot);
 }
 
 } // namespace ninfer::targets::qwen3_6_27b_tp2::detail::tp2

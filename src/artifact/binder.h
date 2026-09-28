@@ -46,6 +46,9 @@ public:
     ObjectHandle require_resource(std::string_view name, ResourceEncoding encoding);
 
     [[nodiscard]] bool contains(std::string_view name) const noexcept;
+    // Descriptor of a named object without consuming it (null when absent): lets a target pick the binding
+    // by the stored format.
+    [[nodiscard]] const ObjectDescriptor* peek(std::string_view name) const noexcept { return reader_.find(name); }
     const ObjectDescriptor& descriptor(ObjectHandle handle) const;
     PayloadSpan payload(ObjectHandle handle) const;
     void materialize_on_device(ObjectHandle handle);
