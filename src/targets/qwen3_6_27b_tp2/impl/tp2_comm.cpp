@@ -35,6 +35,7 @@ ncclComm_t g_comm = nullptr;
 int g_rank        = -1;
 MailboxShared* g_mailbox_dev = nullptr;  // device alias of the shared host block (nullptr: NCCL only)
 std::uint64_t* g_mailbox_steps = nullptr;
+bool g_mailbox_stats           = false;  // NINFER_TP_STATS=1: wait time per rank in the mailbox padding
 std::uint64_t* g_gather_steps  = nullptr;
 __nv_bfloat16* g_head_local    = nullptr;  // [N/2, T] scratch for the sharded heads
 void* g_head_act               = nullptr;  // fp16 staging of the head activation (K x T <= 5120 x 32)
@@ -213,6 +214,9 @@ void init() {
     CUDA_CHECK(cudaFree(buffer));
     g_comm = comm;
     g_rank = rank;
+    if (const char* stats = std::getenv("NINFER_TP_STATS"); stats != nullptr && stats[0] == '1') {
+        g_mailbox_stats = g_mailbox_dev != nullptr;
+    }
     std::fprintf(stderr, "[ninfer] TP2 rank %d/2 ready (NCCL %d, mailbox %s)\n", rank, NCCL_VERSION_CODE,
                  g_mailbox_dev != nullptr ? "on" : "off");
     // Create/attach the per-unit lockstep block now so both ranks agree on its lifetime.
@@ -229,7 +233,7 @@ void allreduce(Tensor& residual, cudaStream_t stream) {
     if (g_mailbox_dev != nullptr && residual.numel() <= kMailboxMaxElements) {
         launch_mailbox_allreduce(static_cast<__nv_bfloat16*>(residual.data),
                                  static_cast<int>(residual.numel()), g_rank, g_mailbox_dev,
-                                 g_mailbox_steps, stream);
+                                 g_mailbox_steps, stream, g_mailbox_stats);
         return;
     }
     nccl_check(ncclAllReduce(residual.data, residual.data, static_cast<std::size_t>(residual.numel()),
