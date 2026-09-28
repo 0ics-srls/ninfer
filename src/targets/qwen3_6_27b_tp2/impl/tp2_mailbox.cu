@@ -5,8 +5,14 @@
 namespace ninfer::targets::qwen3_6_27b_tp2::detail::tp2 {
 namespace {
 
+__device__ __forceinline__ std::uint64_t global_ns() {
+    std::uint64_t t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+
 __global__ void mailbox_allreduce_kernel(__nv_bfloat16* x, int n, int rank, MailboxShared* mb,
-                                         std::uint64_t* steps) {
+                                         std::uint64_t* steps, bool stats) {
     const int blk            = static_cast<int>(blockIdx.x);
     const std::uint64_t step = steps[blk] + 1;
     const int parity         = static_cast<int>(step & 1);
@@ -21,11 +27,17 @@ __global__ void mailbox_allreduce_kernel(__nv_bfloat16* x, int n, int rank, Mail
     __syncthreads();
     if (threadIdx.x == 0) {
         *reinterpret_cast<volatile std::uint64_t*>(&mb->flag[rank][blk][0]) = step;
+        const std::uint64_t wait_begin = stats && blk == 0 ? global_ns() : 0;
         // A dead peer must not leave this kernel spinning forever (the process could not exit and
         // the supervisor's restart would stall): give up after ~60 s and fault the context.
         const long long start = clock64();
         while (*reinterpret_cast<volatile std::uint64_t*>(&mb->flag[peer][blk][0]) < step) {
             if (clock64() - start > 83'000'000'000LL) { __trap(); }
+        }
+        if (stats && blk == 0) {
+            volatile std::uint64_t* counters = &mb->pad0[rank * 4];
+            counters[0] = counters[0] + (global_ns() - wait_begin);
+            counters[1] = counters[1] + 1;
         }
     }
     __syncthreads();
@@ -111,9 +123,9 @@ void launch_mailbox_gather_rows(const __nv_bfloat16* local, int local_rows, int 
 }
 
 void launch_mailbox_allreduce(__nv_bfloat16* x, int elements, int rank, MailboxShared* mailbox,
-                              std::uint64_t* steps, cudaStream_t stream) {
+                              std::uint64_t* steps, cudaStream_t stream, bool stats) {
     const int blocks = (elements + kMailboxSlice - 1) / kMailboxSlice;
-    mailbox_allreduce_kernel<<<blocks, 64, 0, stream>>>(x, elements, rank, mailbox, steps);
+    mailbox_allreduce_kernel<<<blocks, 64, 0, stream>>>(x, elements, rank, mailbox, steps, stats);
     CUDA_CHECK(cudaGetLastError());
 }
 
