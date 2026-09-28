@@ -322,6 +322,12 @@ W8Launch select_w8_launch(std::int32_t n, std::int32_t k, std::int32_t t, Linear
 
 void w8_dispatch(const Tensor& x, const Weight& w, Tensor& out, LinearPolicy policy,
                  cudaStream_t stream) {
+#if defined(NINFER_VOLTA_BUILD) && !defined(NINFER_ADA_BUILD)
+    if (w.layout == QuantLayout::VoltaQpnPrepacked) {   // V100 lane-order W8, any shape
+        launch_w8_prepacked(x, w, out, stream);
+        return;
+    }
+#endif
     const W8Launch launch = select_w8_launch(w.n, w.k, x.ne[1], policy);
     launch(x, w, out, stream);
 }

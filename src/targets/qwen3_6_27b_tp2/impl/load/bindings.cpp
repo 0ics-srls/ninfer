@@ -154,8 +154,12 @@ Weight materialized_weight(const artifact::MaterializedArtifact& materialized,
 }
 
 Weight row_view(const Weight& block, std::int32_t row_begin, std::int32_t row_count) {
+    // A W8 weight prepacked for the V100 (lane order inside 32-row tiles, tiles in row order) has the same byte
+    // offsets at tile boundaries, so views that start and end on a tile stay valid.
+    const bool prepacked_w8 = block.layout == QuantLayout::VoltaQpnPrepacked && block.qtype == QType::W8G32_F16S &&
+                              row_begin % 32 == 0 && row_count % 32 == 0;
     if (row_begin < 0 || row_count <= 0 || row_begin + row_count > block.n ||
-        block.layout != QuantLayout::RowSplit) {
+        (block.layout != QuantLayout::RowSplit && !prepacked_w8)) {
         throw std::logic_error("invalid target row view");
     }
     const std::uint64_t groups    = static_cast<std::uint64_t>(block.padded_shape[1] / block.group);
@@ -685,6 +689,17 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
         mtp.post_attention_norm = artifact::materialized_tensor(
             backing, plan.mtp.post_attention_norm, NumericFormat::BF16, {5120});
         mtp.post_mixer = load_mlp(plan.mtp.mlp, backing);
+#if defined(NINFER_VOLTA_BUILD) && !defined(NINFER_ADA_BUILD)
+        // V100: the MTP projections run at T = 1 per draft, where the row-major W8 routes fall to SIMT.
+        // Row views of the packed attention weight stay valid: every view starts on a 32-row tile.
+        ::ninfer::ops::detail::w8_prepack_qpn_sm70(mtp.input_projection);
+        ::ninfer::ops::detail::w8_prepack_qpn_sm70(mtp.attention.packed);
+        mtp.attention.query       = row_view(mtp.attention.packed, 0, 3072);
+        mtp.attention.key         = row_view(mtp.attention.packed, 3072, 512);
+        mtp.attention.output_gate = row_view(mtp.attention.packed, 3584, 3072);
+        mtp.attention.value       = row_view(mtp.attention.packed, 6656, 512);
+        ::ninfer::ops::detail::w8_prepack_qpn_sm70(mtp.output);
+#endif
         mtp.final_norm = artifact::materialized_tensor(backing, plan.mtp.final_norm,
                                                        NumericFormat::BF16, {5120});
     }
