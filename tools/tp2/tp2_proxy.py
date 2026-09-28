@@ -32,6 +32,8 @@ class Supervisor:
         self.restarts = 0
         self.waiting = 0
         self.count_lock = threading.Lock()
+        self.units_map = None                 # (generation, mmap) of the lockstep block, kept open
+        self.dumped = 0                       # request bodies written under NINFER_TP_DUMP_REQ
 
     # ---- process management -------------------------------------------------------------
     def rank_cmd(self, r):
@@ -76,6 +78,7 @@ class Supervisor:
                 return False
             if all(self.probe(r) for r in (0, 1)):
                 log(f"both ranks ready gen={self.generation}")
+                self.units()
                 self.ready.set()
                 return True
             time.sleep(1)
@@ -122,13 +125,23 @@ class Supervisor:
 
     # ---- lockstep progress ----------------------------------------------------------------
     def units(self):
+        # Map the block once per generation and keep the mapping: the name can disappear while the
+        # ranks run (systemd RemoveIPC empties /dev/shm when the last login session of the user
+        # closes), and a counter read by name would then stay None and turn the watchdog into a
+        # fixed request timeout of --stall-seconds.
+        gen = self.generation
+        if self.units_map is None or self.units_map[0] != gen:
+            try:
+                with open(self.args.lockstep_file, "rb") as f:
+                    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            except (OSError, ValueError):
+                return None
+            if self.units_map is not None:
+                self.units_map[1].close()
+            self.units_map = (gen, mm)
         try:
-            with open(self.args.lockstep_file, "rb") as f:
-                mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-                a, b = struct.unpack_from("<QQ", mm, 64)
-                mm.close()
-                return a, b
-        except (OSError, ValueError, struct.error):
+            return struct.unpack_from("<QQ", self.units_map[1], 64)
+        except (ValueError, struct.error):
             return None
 
 
@@ -225,10 +238,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
         req["seed"] = int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF
         return json.dumps(req).encode()
 
+    def _dump(self, body):
+        # NINFER_TP_DUMP_REQ=<dir>: keep every generation request body (as sent to the ranks, seed included)
+        # so a real client session can be replayed without the client. Off by default: bodies hold prompts.
+        d = os.environ.get("NINFER_TP_DUMP_REQ")
+        if not d:
+            return
+        try:
+            os.makedirs(d, exist_ok=True)
+            with self.sup.count_lock:
+                self.sup.dumped += 1
+                n = self.sup.dumped
+            with open(os.path.join(d, f"{n:05d}-{int(time.time())}.json"), "wb") as f:
+                f.write(body)
+        except OSError as e:
+            log(f"request dump failed: {e}")
+
     def _generate(self, body):
         sup = self.sup
         gen = sup.generation
         body = self._with_seed(body)
+        self._dump(body)
         headers = self._headers_in()
         headers["Content-Length"] = str(len(body))
         conns = [http.client.HTTPConnection("127.0.0.1", sup.args.rank_ports[r], timeout=None)
