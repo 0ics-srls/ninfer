@@ -1,3 +1,4 @@
+#include "ops/linear/w8/w8_cutlass.h"
 #include "ops/linear/w8/w8_volta_qpn_prepacked.h"
 #include "ops/common/tp2_shape.h"
 #include "targets/qwen3_6_27b_tp2/impl/load/bindings.h"
@@ -193,6 +194,10 @@ DensePostMixerPayload load_mlp(const MlpPlan& plan,
     if (out.gate_up.qtype == QType::NVFP4) {
         ::ninfer::ops::detail::nvfp4_prepack_qpn_sm70(out.gate_up);
         ::ninfer::ops::detail::nvfp4_prepack_qpn_sm70(out.down);
+    }
+    if (out.gate_up.qtype == QType::W8G32_F16S) {   // prefill scratch of the CUTLASS W8 route
+        ::ninfer::ops::detail::w8_cutlass_reserve(out.gate_up.n, out.gate_up.k, 2048);
+        ::ninfer::ops::detail::w8_cutlass_reserve(out.down.n, out.down.k, 2048);
     }
 #ifndef NINFER_ADA_BUILD
     if (out.gate_up.qtype == QType::W8G32_F16S) {   // V100: lane-order W8 for the prepacked GEMV

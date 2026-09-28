@@ -1,3 +1,4 @@
+#include "ops/linear/w8/w8_cutlass.h"
 #include "ops/linear/w8/w8_volta_qpn_prepacked.h"
 #include <cstdlib>
 #include "ops/common/tp2_shape.h"
@@ -291,6 +292,7 @@ W8Launch select_w8_launch(std::int32_t n, std::int32_t k, std::int32_t t, Linear
                 const char* v = std::getenv("NINFER_W8_ADA_MMA");
                 return v == nullptr || v[0] != 0;
             }();
+            if (w8_cutlass_ready(n, k, t)) { return w8_cutlass_launch; }
             if (ampere) { return launch_w8_mma_r64_c128; }
 #endif
             if (w8_uses_volta_mma(n, k, t)) { return launch_w8_volta_mma; }

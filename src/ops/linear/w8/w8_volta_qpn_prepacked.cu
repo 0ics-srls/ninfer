@@ -1,3 +1,4 @@
+#include "ops/linear/w8/w8_cutlass.h"
 #include "ops/linear/w8/w8_volta_qpn_prepacked.h"
 
 #include "core/device.h"
@@ -206,6 +207,10 @@ void launch_w8_prepacked(const Tensor& x, const Weight& w, Tensor& out, cudaStre
     if (t > 32) {
         static int logged = 0;
         if (logged < 40) { ++logged; std::fprintf(stderr, "[w8pp] wide T=%d n=%d k=%d\n", t, n, k); }
+        if (w8_cutlass_ready(n, k, t)) {   // prefill: dequantize to fp16 and one CUTLASS GEMM
+            w8_cutlass_launch(x, w, out, stream);
+            return;
+        }
         // Wide T: row-major copy in the load-time scratch, then the existing Volta MMA route.
         const std::int64_t total = static_cast<std::int64_t>(n / 32) * groups * 32;
         w8_pack_kernel<<<static_cast<unsigned>((total + 255) / 256), 256, 0, stream>>>(
