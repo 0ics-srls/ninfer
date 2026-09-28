@@ -36,7 +36,7 @@
 
 namespace ninfer::ops::detail {
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 
 struct Q5VoltaMmaSchedule {
     static constexpr int kWarps  = 4;  // warps per CTA; each owns 8 output rows

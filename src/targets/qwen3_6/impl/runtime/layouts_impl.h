@@ -723,8 +723,14 @@ void validate_target_options(DeviceContext& device, const EngineOptions& options
         options.kv_cache == KvCacheStorage::Fp8KeyNvfp4Value) {
         throw std::invalid_argument("NVFP4 KV-cache storage is unavailable on Volta");
     }
+#ifdef NINFER_ADA_BUILD
+    // Volta execution path compiled for Ada: the RTX 4090 rank of a V100 + 4090 tensor parallel.
+    if (device.compute_capability() != 89) {
+        throw std::invalid_argument("Qwen3.6 family Volta-path Ada runtime requires compute capability 8.9");
+#else
     if (device.compute_capability() != 70) {
         throw std::invalid_argument("Qwen3.6 family Volta runtime requires compute capability 7.0");
+#endif
     }
 #elif defined(NINFER_ADA_BUILD)
     // Ada port: NVFP4 storage needs Blackwell FP4 conversion, absent on sm_89.

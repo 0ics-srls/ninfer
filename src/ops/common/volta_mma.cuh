@@ -22,7 +22,7 @@
 
 namespace ninfer::ops {
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 
 // --- Fragment addressing -------------------------------------------------------------
 
@@ -148,6 +148,6 @@ __device__ __forceinline__ void volta_softmax_to_half2(half2 (&p)[4], const floa
     }
 }
 
-#endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#endif // !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 
 } // namespace ninfer::ops

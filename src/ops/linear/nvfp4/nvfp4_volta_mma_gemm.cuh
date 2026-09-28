@@ -51,7 +51,7 @@
 
 namespace ninfer::ops::detail {
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 
 struct Nvfp4VoltaMmaSchedule {
     static constexpr int kWarps      = 4;

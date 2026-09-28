@@ -19,13 +19,24 @@ if(CMAKE_CUDA_ARCHITECTURES MATCHES "^(70|120a)$")
 else()
   set(NINFER_ENABLE_NVFP4 OFF)
 endif()
-message(STATUS "NInfer: arch=${CMAKE_CUDA_ARCHITECTURES} NVFP4=${NINFER_ENABLE_NVFP4}")
+# Volta execution path: always on sm_70; on sm_89 on request, for the RTX 4090 rank of a V100 + 4090 tensor
+# parallel (same kernels, NVFP4 format and TP2 target on both ranks, so the two graphs match step by step).
+option(NINFER_VOLTA_PATH "Build the Volta (sm_70) execution path for this architecture" OFF)
+if(CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+  set(NINFER_VOLTA_PATH ON)
+elseif(NINFER_VOLTA_PATH AND NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
+  message(FATAL_ERROR "NINFER_VOLTA_PATH is supported on sm_70 and sm_89 only")
+endif()
+if(NINFER_VOLTA_PATH)
+  set(NINFER_ENABLE_NVFP4 ON)   # software NVFP4 on FP16 tensor cores, the Volta route
+endif()
+message(STATUS "NInfer: arch=${CMAKE_CUDA_ARCHITECTURES} NVFP4=${NINFER_ENABLE_NVFP4} VOLTA_PATH=${NINFER_VOLTA_PATH}")
 
 # __CUDA_ARCH__ is only ever defined during device-code compilation, so it can't guide
 # host-side dispatch decisions (e.g. "call the SIMT kernel instead of the mma one on
 # Volta") — those live in plain .cpp/.cu host functions. This is the equivalent signal
 # for host code.
-if(CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+if(NINFER_VOLTA_PATH)
   add_compile_definitions(NINFER_VOLTA_BUILD=1)
 endif()
 if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
@@ -43,7 +54,7 @@ project(ninfer LANGUAGES C CXX CUDA)
 # sm_120a already has its own tensor-core kernels. Pinned to the same v4.4.2 tag
 # independently verified (via a standalone sanity GEMM, correctness-checked against
 # CUTLASS's own reference kernel on real V100 hardware) to build and run correctly here.
-if(CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+if(NINFER_VOLTA_PATH)
   include(FetchContent)
   set(CUTLASS_ENABLE_HEADERS_ONLY ON CACHE BOOL "Enable only the header library")
   set(CUTLASS_ENABLE_TESTS OFF CACHE BOOL "Disable CUTLASS tests")

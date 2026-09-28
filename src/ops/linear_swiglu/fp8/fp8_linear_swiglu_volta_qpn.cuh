@@ -30,7 +30,7 @@
 
 namespace ninfer::ops::detail {
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 
 inline constexpr int kFp8SwigluIntermediate = 17408; // Fp8MlpGateUpGeometry::kOutputRows / 2
 inline constexpr int kFp8SwigluWarps = 4;  // not yet generalized to SPLITK; see fp8_volta_qpn_gemm.cuh

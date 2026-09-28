@@ -56,7 +56,7 @@ if(NINFER_ENABLE_NVFP4)
 add_library(ninfer_nvfp4_non_rdc STATIC
   ops/linear/nvfp4/nvfp4_w4a4_tma.cu
   ops/linear_swiglu/nvfp4/nvfp4_linear_swiglu_w4a4_tma.cu)
-if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+if(NOT NINFER_VOLTA_PATH)
   target_sources(ninfer_nvfp4_non_rdc PRIVATE
     ops/softmax_attention/dense/causal_cache/prompt_nvfp4_non_rdc.cu)
 endif()
@@ -320,7 +320,7 @@ add_library(ninfer_ops STATIC
   ops/wrapper/sparse_moe.cpp
   ops/wrapper/target_logprobs.cpp
   ops/wrapper/vision_pos_embed.cpp)
-if(CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+if(NINFER_VOLTA_PATH)
   # Volta-only execution leaves. Shared Op contracts and planners remain in the
   # ordinary source list above; these files provide the sm_70 implementations.
   target_sources(ninfer_ops PRIVATE
@@ -401,7 +401,7 @@ target_link_libraries(ninfer_ops PUBLIC ninfer_core PRIVATE ninfer_nvfp4_non_rdc
 # Ada build: the Volta port rerouted FP8 attention input (fp8_attn_input_plan.cpp) and no longer
 # calls the upstream A16 small-T MMA / GEMM launchers, whose constants it removed. They are dead
 # code in this tree (the Volta build already excludes them); keep them out of the Ada build too.
-if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
+if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89" AND NOT NINFER_VOLTA_PATH)
   set_source_files_properties(ops/attn_input_proj/fp8/fp8_attn_input_a16_small_t.cu TARGET_DIRECTORY ninfer_ops PROPERTIES HEADER_FILE_ONLY ON)
   set_source_files_properties(ops/attn_input_proj/fp8/fp8_attn_input_a16_gemm.cu TARGET_DIRECTORY ninfer_ops PROPERTIES HEADER_FILE_ONLY ON)
 endif()

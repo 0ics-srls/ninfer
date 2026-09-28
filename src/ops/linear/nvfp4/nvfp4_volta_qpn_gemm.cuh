@@ -57,7 +57,7 @@
 
 namespace ninfer::ops::detail {
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 
 struct Nvfp4VoltaQpnSchedule {
     static constexpr int kColsPerCta  = 32; // output rows per CTA (mma's N axis)

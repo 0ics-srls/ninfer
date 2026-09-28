@@ -102,7 +102,7 @@ __launch_bounds__(WarpsPerCta * 32, 2) __global__
     static_assert(TokenTile >= 1 && TokenTile * Geometry::GroupSize <= 48);
     static_assert(WarpsPerCta == 4 || WarpsPerCta == 5);
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
     constexpr int DimSplit      = 4;
     constexpr bool CompactTail  = WarpsPerCta == 5;
     constexpr int Br            = 32;          // one Volta tile's worth of rows per pass
@@ -675,7 +675,7 @@ __launch_bounds__(WarpsPerCta * 32, 2) __global__
         }
         __syncthreads();
     }
-#endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#endif // !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 }
 
 } // namespace ninfer::ops

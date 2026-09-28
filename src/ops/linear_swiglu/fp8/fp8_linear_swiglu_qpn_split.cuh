@@ -18,7 +18,7 @@
 
 namespace ninfer::ops::detail {
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 
 // Reads two fp32 [kIntermediate, T] planes (token-major, matching Fp8Fp32ContiguousOutput's store
 // layout) and writes silu(gate) * up as BF16. Output-sized traffic, not weight-sized.

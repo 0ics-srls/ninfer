@@ -31,7 +31,7 @@ sliding_window_attention_volta_octet_partial_kernel(
     float* __restrict__ partial_acc, float* __restrict__ partial_m,
     float* __restrict__ partial_l) {
     static_assert(Tokens == 8, "the Volta octet path is the DFlash2 K=7 tile");
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
     constexpr int D                 = kContextQueryHeadDim;
     constexpr int Window            = 2048;
     constexpr int KeyBlock          = 32;

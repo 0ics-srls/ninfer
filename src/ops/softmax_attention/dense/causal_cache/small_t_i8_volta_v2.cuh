@@ -64,7 +64,7 @@ __launch_bounds__(kCausalSmallTI8VoltaV2Warps * 32, 1) __global__
     const std::int32_t* table_rows, std::int32_t table_stride, std::int32_t tokens,
     std::int32_t full_width, std::int32_t column_begin, std::int32_t logical_capacity, float scale,
     float* partial_acc, float* partial_m, float* partial_l, std::int32_t key_window = 0) {
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
     constexpr int Warps         = kCausalSmallTI8VoltaV2Warps;
     constexpr int Threads       = Warps * 32;
     constexpr int Br            = 32;
@@ -502,7 +502,7 @@ __launch_bounds__(kCausalSmallTI8VoltaV2Warps * 32, 1) __global__
             partial_acc[causal_partial_acc_index<Geometry>(qh, d, tk, split, tokens)] = acc_f[c][i];
         }
     }
-#endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#endif // !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 }
 
 } // namespace ninfer::ops

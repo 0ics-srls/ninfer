@@ -42,7 +42,7 @@
 
 namespace ninfer::ops::detail {
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 
 struct W8VoltaQpnSchedule {
     static constexpr int kWarps       = 4;  // warps per CTA; they split K, not N

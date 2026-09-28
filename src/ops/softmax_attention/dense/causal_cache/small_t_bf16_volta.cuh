@@ -73,7 +73,7 @@ __launch_bounds__(128, 2) __global__ void causal_attention_small_t_tc_volta_part
     static_assert(TokenTile >= 1 && TokenTile * Geometry::GroupSize <= 48);
     static_assert(WarpsPerCta == 4, "this kernel always splits the head dim 4 ways -- see file comment");
 
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
     constexpr int DimSplit      = WarpsPerCta; // warps split the head dim, not the row range
     constexpr int Br            = 32;          // one Volta tile's worth of rows per pass
     constexpr int Bc            = 16;          // keys per shared-memory tile
@@ -474,7 +474,7 @@ __launch_bounds__(128, 2) __global__ void causal_attention_small_t_tc_volta_part
         }
         __syncthreads();
     }
-#endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ == 700
+#endif // !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ == 700 || __CUDA_ARCH__ == 890)
 }
 
 } // namespace ninfer::ops
