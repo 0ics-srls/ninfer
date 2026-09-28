@@ -427,6 +427,156 @@ void nvfp4_volta_qpn_prepacked_kernel(const std::uint8_t* __restrict__ codes,
     }
 }
 
+#ifdef NINFER_ADA_BUILD
+// Ada (sm_89) companion of the prepacked kernel: same CTA geometry (32 output rows, SPLITK warps splitting K,
+// one barrier for the cross-warp reduce), but the weights are the A operand of mma.m16n8k16 (two 16-row halves
+// per warp) and the tokens its N axis (8 per tile). Each lane decodes one 32-bit word per half straight into its
+// A fragment (Ada prepack order) and reads its activations in natural k order. The fp16 decode arithmetic is the
+// Volta kernel's: code * 2^14, then * (e4m3 scale * divisor * 256).
+__device__ __forceinline__ void ada_mma_m16n8k16(float (&d)[4], const std::uint32_t (&a)[4],
+                                                 std::uint32_t b0, std::uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                 "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
+                 : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+                 : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
+}
+
+template <class Activation>
+__device__ __forceinline__ std::uint32_t ada_activation_pair(const Activation* p) {
+    if constexpr (std::is_same_v<Activation, half>) {
+        return *reinterpret_cast<const std::uint32_t*>(p);
+    } else {
+        const float2 f = __bfloat1622float2(*reinterpret_cast<const __nv_bfloat162*>(p));
+        half2 h        = __halves2half2(__float2half(f.x), __float2half(f.y));
+        return *reinterpret_cast<std::uint32_t*>(&h);
+    }
+}
+
+template <int kTiles, int SPLITK, int NACC, class OutputPolicy, class Activation>
+__global__ __launch_bounds__(SPLITK * 32) void nvfp4_ada_qpn_prepacked_kernel(
+    const std::uint8_t* __restrict__ codes, const std::uint8_t* __restrict__ scales,
+    const Activation* __restrict__ x, int n, int k, int t, float inverse_weight_divisor,
+    OutputPolicy output) {
+    using S = Nvfp4VoltaQpnSchedule;
+    __shared__ float cs[SPLITK][kTiles * S::kRowsPerTile * S::kColsPerCta];
+
+    const int lane     = static_cast<int>(threadIdx.x) & 31;
+    const int warp     = static_cast<int>(threadIdx.x) >> 5;
+    const int g        = lane >> 2;
+    const int q        = lane & 3;
+    const int groups   = k / S::kGroupK;
+    const int quotient = groups / SPLITK;
+    const int g0       = warp * quotient;
+    const int gend     = warp == SPLITK - 1 ? groups : g0 + quotient;
+    const std::int64_t tile_groups = static_cast<std::int64_t>(blockIdx.x) * groups;
+    const half2 rebias   = __float2half2_rn(16384.0f);
+    const half2 divisor2 = __float2half2_rn(inverse_weight_divisor * 256.0f);
+
+    float c[kTiles][2][NACC][4];
+#pragma unroll
+    for (int tile = 0; tile < kTiles; ++tile) {
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+#pragma unroll
+            for (int a = 0; a < NACC; ++a) {
+#pragma unroll
+                for (int i = 0; i < 4; ++i) { c[tile][h][a][i] = 0.0f; }
+            }
+        }
+    }
+
+    auto group_body = [&](int grp, int acc, uint2 q2, std::uint32_t s4) {
+        half2 sc[4];
+#pragma unroll
+        for (int b = 0; b < 4; ++b) {
+            sc[b] = __hmul2(nvfp4_decode_e4m3_scale(static_cast<std::uint8_t>(s4 >> (8 * b))), divisor2);
+        }
+        half2 w0[4];
+        half2 w1[4];
+        nvfp4_decode_e2m1_quad(q2.x, rebias, w0);
+        nvfp4_decode_e2m1_quad(q2.y, rebias, w1);
+        // Fragment registers 0/2 are row g, 1/3 row g + 8 of each 16-row half.
+        w0[0] = __hmul2(w0[0], sc[0]);
+        w0[2] = __hmul2(w0[2], sc[0]);
+        w0[1] = __hmul2(w0[1], sc[1]);
+        w0[3] = __hmul2(w0[3], sc[1]);
+        w1[0] = __hmul2(w1[0], sc[2]);
+        w1[2] = __hmul2(w1[2], sc[2]);
+        w1[1] = __hmul2(w1[1], sc[3]);
+        w1[3] = __hmul2(w1[3], sc[3]);
+        const auto& a0 = *reinterpret_cast<const std::uint32_t(*)[4]>(w0);
+        const auto& a1 = *reinterpret_cast<const std::uint32_t(*)[4]>(w1);
+        const int kbase = grp * S::kGroupK + 2 * q;
+#pragma unroll
+        for (int tile = 0; tile < kTiles; ++tile) {
+            const int token = tile * S::kRowsPerTile + g;
+            std::uint32_t b0 = 0;
+            std::uint32_t b1 = 0;
+            if (token < t) {
+                const Activation* source = x + static_cast<std::int64_t>(token) * k + kbase;
+                b0 = ada_activation_pair(source);
+                b1 = ada_activation_pair(source + 8);
+            }
+            ada_mma_m16n8k16(c[tile][0][acc], a0, b0, b1);
+            ada_mma_m16n8k16(c[tile][1][acc], a1, b0, b1);
+        }
+    };
+
+    constexpr int kUnroll = 8;
+    int group = g0;
+    for (; group + kUnroll <= gend; group += kUnroll) {
+        uint2 qq[kUnroll];
+        std::uint32_t ss[kUnroll];
+#pragma unroll
+        for (int u = 0; u < kUnroll; ++u) {
+            const std::int64_t base = (tile_groups + group + u) * 32;
+            qq[u] = __ldg(reinterpret_cast<const uint2*>(codes + (base + lane) * 8));
+            ss[u] = __ldg(reinterpret_cast<const std::uint32_t*>(scales + base + g * 4));
+        }
+#pragma unroll
+        for (int u = 0; u < kUnroll; ++u) { group_body(group + u, u % NACC, qq[u], ss[u]); }
+    }
+    for (; group < gend; ++group) {
+        const std::int64_t base = (tile_groups + group) * 32;
+        group_body(group, 0, __ldg(reinterpret_cast<const uint2*>(codes + (base + lane) * 8)),
+                   __ldg(reinterpret_cast<const std::uint32_t*>(scales + base + g * 4)));
+    }
+
+#pragma unroll
+    for (int tile = 0; tile < kTiles; ++tile) {
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+#pragma unroll
+            for (int a = 1; a < NACC; ++a) {
+#pragma unroll
+                for (int i = 0; i < 4; ++i) { c[tile][h][0][i] += c[tile][h][a][i]; }
+            }
+            // C fragment: element i is output row h*16 + g + 8*(i>>1), token tile*8 + 2q + (i&1).
+#pragma unroll
+            for (int i = 0; i < 4; ++i) {
+                const int token = tile * S::kRowsPerTile + 2 * q + (i & 1);
+                const int col   = h * 16 + g + 8 * (i >> 1);
+                cs[warp][token * S::kColsPerCta + col] = c[tile][h][0][i];
+            }
+        }
+    }
+    __syncthreads();
+
+    constexpr int kOut = kTiles * S::kRowsPerTile * S::kColsPerCta;
+    for (int e = static_cast<int>(threadIdx.x); e < kOut; e += SPLITK * 32) {
+        const int row  = e / S::kColsPerCta;
+        const int col  = e % S::kColsPerCta;
+        const int ocol = static_cast<int>(blockIdx.x) * S::kColsPerCta + col;
+        if (row < t && ocol < n) {
+            float value = 0.0f;
+#pragma unroll
+            for (int w = 0; w < SPLITK; ++w) { value += cs[w][e]; }
+            output.store(ocol, row, value);
+        }
+    }
+}
+#endif // NINFER_ADA_BUILD
+
 // Shared launcher. Every NVFP4 consumer that wants the plain contiguous output takes this
 // directly; a fused consumer supplies its own OutputPolicy.
 //
@@ -450,6 +600,12 @@ void launch_nvfp4_qpn_schedule(bool prepacked, dim3 grid, const std::uint8_t* co
                                int t, float inverse_weight_divisor, OutputPolicy output,
                                cudaStream_t stream) {
     if (prepacked) {
+#ifdef NINFER_ADA_BUILD
+        nvfp4_ada_qpn_prepacked_kernel<kTiles, SPLITK, NACC>
+            <<<grid, SPLITK * 32, 0, stream>>>(codes, scales, x, n, k, t,
+                                               inverse_weight_divisor, output);
+        return;
+#endif
         nvfp4_volta_qpn_prepacked_kernel<kTiles, SPLITK, NACC>
             <<<grid, SPLITK * 32, 0, stream>>>(codes, scales, x, n, k, t,
                                                inverse_weight_divisor, output);

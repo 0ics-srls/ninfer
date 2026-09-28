@@ -26,6 +26,41 @@ __global__ void prepack_qpn_kernel(const std::uint8_t* __restrict__ input_codes,
     const int lane  = static_cast<int>(index % 32);
     const int group = static_cast<int>((index / 32) % groups);
     const int tile  = static_cast<int>(index / (static_cast<std::int64_t>(groups) * 32));
+#ifdef NINFER_ADA_BUILD
+    // Ada order (nvfp4_ada_qpn_prepacked_kernel): lane (g = lane/4, q = lane%4) holds, for each of the two
+    // 16-row halves of the 32-row tile, one 32-bit word that the shift decoder turns into exactly the
+    // mma.m16n8k16 A fragment: nibble p -> row g + 8*(p&1), k 2q + 8*((p>>1)&1) + (p>>2). Scales: the thread for
+    // lane (g, q) stores the byte of row g + 8q, so lane g reads its four rows as one word at g*4.
+    {
+        const int g = lane >> 2;
+        const int q = lane & 3;
+        std::uint32_t words[2];
+#pragma unroll
+        for (int half_tile = 0; half_tile < 2; ++half_tile) {
+            std::uint32_t word = 0;
+#pragma unroll
+            for (int p = 0; p < 8; ++p) {
+                const int row = tile * 32 + half_tile * 16 + g + 8 * (p & 1);
+                const int kk  = group * 16 + 2 * q + 8 * ((p >> 1) & 1) + (p >> 2);
+                word |= static_cast<std::uint32_t>(
+                            native_nibble(input_codes + static_cast<std::int64_t>(row) * (k / 2), kk))
+                        << (4 * p);
+            }
+            words[half_tile] = word;
+        }
+        *reinterpret_cast<uint2*>(output_codes + index * 8) = make_uint2(words[0], words[1]);
+        const int srow            = tile * 32 + g + 8 * q;
+        const int scale_tile      = group / 4;
+        const int scale_lane      = group & 3;
+        const int row_inner       = srow & 127;
+        const int scales_per_m128 = k / 64;
+        const std::int64_t scale_offset =
+            static_cast<std::int64_t>((srow / 128) * scales_per_m128 + scale_tile) * 512 +
+            (row_inner & 31) * 16 + (row_inner >> 5) * 4 + scale_lane;
+        output_scales[index] = input_scales[scale_offset];
+        return;
+    }
+#endif
     const int row   = tile * 32 + ((lane >> 2) & 3) * 8 + (lane & 3) + ((lane & 16) ? 4 : 0);
     const std::uint8_t* source_row = input_codes + static_cast<std::int64_t>(row) * (k / 2);
     constexpr int order[16] = {0, 2, 4, 6, 1, 3, 5, 7, 8, 10, 12, 14, 9, 11, 13, 15};
