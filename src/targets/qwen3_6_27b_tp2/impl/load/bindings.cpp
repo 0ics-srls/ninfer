@@ -1,3 +1,4 @@
+#include "ops/linear/w8/w8_volta_qpn_prepacked.h"
 #include "ops/common/tp2_shape.h"
 #include "targets/qwen3_6_27b_tp2/impl/load/bindings.h"
 
@@ -189,6 +190,12 @@ DensePostMixerPayload load_mlp(const MlpPlan& plan,
         ::ninfer::ops::detail::nvfp4_prepack_qpn_sm70(out.gate_up);
         ::ninfer::ops::detail::nvfp4_prepack_qpn_sm70(out.down);
     }
+#ifndef NINFER_ADA_BUILD
+    if (out.gate_up.qtype == QType::W8G32_F16S) {   // V100: lane-order W8 for the prepacked GEMV
+        ::ninfer::ops::detail::w8_prepack_qpn_sm70(out.gate_up);
+        ::ninfer::ops::detail::w8_prepack_qpn_sm70(out.down);
+    }
+#endif
 #endif
     return out;
 }

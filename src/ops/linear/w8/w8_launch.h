@@ -10,6 +10,12 @@ namespace ninfer::ops::detail {
 
 using W8Launch = void (*)(const Tensor&, const Weight&, Tensor&, cudaStream_t);
 
+#ifdef NINFER_ADA_BUILD
+// TP2 8-bit MLP decode on the RTX 4090: upstream small-T kernel at this rank's shapes (false when not applicable).
+bool launch_w8_tp2_small_t(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream);
+void launch_w8_tp2_decode(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream);
+#endif
+
 #ifdef NINFER_VOLTA_BUILD
 // Fused-dequant tensor-core route (w8_volta_mma_gemm.cuh). Unlike its Q4/Q5 siblings this one
 // fits the W8Launch signature, because the shapes it is selected for supply far more CTAs than
