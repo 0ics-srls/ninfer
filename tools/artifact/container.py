@@ -1,4 +1,4 @@
-"""Minimal reader and streaming writer for the NInfer v2 object directory."""
+"""Minimal reader (NInfer v2 and v3) and streaming writer (v2) for the NInfer object directory."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence, TypeAlias
 
+from . import v3 as _v3
 from .layouts import align_up, encoded_size, get_layout
 
 
@@ -295,9 +296,15 @@ class Artifact:
         self.path = Path(path)
         self._file = self.path.open("rb")
         self._mapping: mmap.mmap | None = None
+        self.v3: dict | None = None
         try:
             self._file.seek(0, 2)
             self.file_bytes = self._file.tell()
+            self._file.seek(0)
+            if self._file.read(len(_v3.MAGIC_V3)) == _v3.MAGIC_V3:
+                self._load_v3()
+                self._mapping = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+                return
             self._file.seek(0)
             if self.file_bytes < PREFIX_BYTES:
                 raise ArtifactError("artifact is shorter than the v2 prefix")
@@ -323,6 +330,30 @@ class Artifact:
                 self._mapping.close()
             self._file.close()
             raise
+
+    def _load_v3(self) -> None:
+        # v3: same payload encodings, directory mapped back onto the stored-object names the tools use.
+        # `v3_entries` keeps every v3 object (with its raw entry) for tools that write v3 again.
+        directory, self.payload_offset, self.artifact_id = _v3.read_directory(self._file)
+        names = _v3.object_names(directory)
+        entries: list[tuple[dict, ArtifactObject]] = []
+        for raw in directory["objects"]:
+            if raw["id"] not in names:
+                raise ArtifactError(f"v3 object {raw['id']} has no known binding")
+            kind, name, shape, fmt, layout = _v3.stored_view(raw, names[raw["id"]])
+            if kind == "tensor":
+                obj: ArtifactObject = TensorObject(name, shape, fmt, layout, raw["offset"], raw["bytes"])
+            else:
+                obj = ResourceObject(name, layout, raw["offset"], raw["bytes"])
+            entries.append((raw, obj))
+        unique: dict[str, ArtifactObject] = {}
+        for _, obj in entries:   # activation scalars stored once per role (gate, up): identical, first wins
+            unique.setdefault(obj.name, obj)
+        self.v3 = directory
+        self.v3_entries = entries
+        self.identity = ArtifactIdentity(*_v3.identity_of(directory))
+        self.objects = tuple(unique.values())
+        self._index = _validate_ranges(self.objects, self.file_bytes - self.payload_offset)
 
     @classmethod
     def open(cls, path: str | Path) -> "Artifact":

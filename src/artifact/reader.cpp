@@ -343,6 +343,11 @@ ArtifactIdentity v3_identity(const Json& directory) {
         }
     }
     identity.weights_id = nvfp4 ? "nvfp4" : "groupwise-int";
+    // Tensor-parallel ranks written by tools/tp2 (v3 directory of one rank): nvfp4-tp2 and so on.
+    if (const auto& metadata = directory.at("metadata"); metadata.contains("tensor_parallel")) {
+        identity.weights_id += "-tp" + std::to_string(require_unsigned(
+                                           metadata.at("tensor_parallel").at("ranks"), "tensor_parallel ranks", true));
+    }
     return identity;
 }
 
