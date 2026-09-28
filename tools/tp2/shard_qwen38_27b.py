@@ -12,13 +12,16 @@ scales + divisor, W8 groups + scales, BF16/FP32 values) and re-encoded with tool
 two halves re-concatenate bit-exactly to the source (see --verify).
 
 usage: python -m tools.tp2.shard_qwen38_27b SRC OUT_PREFIX [--verify] [--drop-dflash2] [--mlp-rank0 N]
-       --mlp-rank0 N gives rank 0 the first N of the 17408 MLP intermediate columns (multiple of 128; default 8704 =
+       --mlp-q8 GGUF takes the text MLP of every layer from a llama.cpp Q8_0 GGUF of the same checkpoint (blk.L.ffn_gate /
+       ffn_up / ffn_down), stored as W8G32_F16S: the Q8_0 blocks bit for bit (v3 source only).
+       --mlp-rank0 N gives rank 0 the first N of the 17408 MLP intermediate columns (multiple of 256; default 8704 =
        even split) and rank 1 the rest; each rank's binary must be built with that width (NINFER_TP2_INTERMEDIATE).
        --drop-dflash2 leaves the DFlash2 companion weights (optional component, not sharded here) out of both ranks.
        writes OUT_PREFIX.rank0.ninfer and OUT_PREFIX.rank1.ninfer
 """
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 
@@ -34,7 +37,7 @@ TP = 2
 
 MLP_FULL = 17408
 MLP_RANK0 = int(sys.argv[sys.argv.index("--mlp-rank0") + 1]) if "--mlp-rank0" in sys.argv else MLP_FULL // 2
-assert 0 < MLP_RANK0 < MLP_FULL and MLP_RANK0 % 128 == 0, "--mlp-rank0 must be a multiple of 128 below 17408"
+assert 0 < MLP_RANK0 < MLP_FULL and MLP_RANK0 % 256 == 0, "--mlp-rank0 must be a multiple of 256 below 17408"
 
 
 @dataclass(frozen=True)
@@ -154,11 +157,56 @@ def kept(name: str) -> bool:
     return not name.startswith(DROP) if DROP else True
 
 
+MLP_Q8 = sys.argv[sys.argv.index("--mlp-q8") + 1] if "--mlp-q8" in sys.argv else None
+_Q8_TENSORS = None
+
+
+def q8_blocks(name: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """(codes int8 [N, K/32, 32], scales fp16 [N, K/32]) of one Q8_0 GGUF tensor."""
+    global _Q8_TENSORS
+    if _Q8_TENSORS is None:
+        from gguf import GGUFReader
+        _Q8_TENSORS = {t.name: t for t in GGUFReader(MLP_Q8).tensors}
+    t = _Q8_TENSORS[name]
+    assert t.tensor_type.name == "Q8_0", (name, t.tensor_type.name)
+    raw = torch.from_numpy(t.data.copy())                # [N, K/32 * 34] bytes
+    blocks = raw.view(raw.shape[0], -1, 34)
+    scales = blocks[:, :, 0:2].contiguous().view(torch.float16).squeeze(-1)
+    codes = blocks[:, :, 2:34].contiguous().view(torch.int8)
+    return codes, scales
+
+
+def q8_mlp_payload(name: str, rule: Rule, rank: int) -> tuple[bytes, list[int]]:
+    """W8G32_F16S payload and shape of this rank's MLP object, from the Q8_0 GGUF."""
+    layer = int(name.split("/")[2])
+    if name.endswith("/mlp/gate_up"):
+        begin, length = rule.piece(MLP_FULL, rank)
+        parts = [q8_blocks(f"blk.{layer}.ffn_{half}.weight") for half in ("gate", "up")]
+        codes = torch.cat([c[begin:begin + length] for c, _ in parts]).contiguous()
+        scales = torch.cat([sc[begin:begin + length] for _, sc in parts]).contiguous()
+        shape = [2 * length, 5120]
+    else:
+        begin, length = rule.piece(MLP_FULL, rank)
+        codes, scales = q8_blocks(f"blk.{layer}.ffn_down.weight")
+        codes = codes[:, begin // 32:(begin + length) // 32].contiguous()
+        scales = scales[:, begin // 32:(begin + length) // 32].contiguous()
+        shape = [5120, length]
+    return L.encode_row_split(codes, scales, "W8G32_F16S", shape), shape
+
+
+def is_text_mlp(name: str) -> bool:
+    return name.startswith("text/layers/") and (name.endswith("/mlp/gate_up") or name.endswith("/mlp/down"))
+
+
 def build_v3(art: Artifact, prefix: str) -> None:
     """v3 source -> v3 ranks: same ids, bindings and uses; split objects get their rank shape, row-split fused
     objects get halved binding ranges, identity carries metadata.tensor_parallel."""
-    keep = [(raw, obj) for raw, obj in art.v3_entries if kept(obj.name)]
-    dropped = {raw["id"] for raw, obj in art.v3_entries if not kept(obj.name)}
+    # With --mlp-q8 the NVFP4 activation divisors of the MLP have no consumer any more: they leave with the NVFP4.
+    q8_scalar = re.compile(r"^text/layers/\d+/mlp/(gate_up|down)_projection/input_scale_divisor$")
+    def kept_here(name: str) -> bool:
+        return kept(name) and not (MLP_Q8 and q8_scalar.match(name))
+    keep = [(raw, obj) for raw, obj in art.v3_entries if kept_here(obj.name)]
+    dropped = {raw["id"] for raw, obj in art.v3_entries if not kept_here(obj.name)}
     rules = {raw["id"]: rule_for(obj.name) if isinstance(obj, TensorObject) else None for raw, obj in keep}
     parted = {p["object"] for b in art.v3["bindings"].values() for p in b.get("parts", [])}
     for oid, rule in rules.items():
@@ -171,11 +219,16 @@ def build_v3(art: Artifact, prefix: str) -> None:
         objects = []
         for raw, obj in keep:
             rule = rules[raw["id"]]
-            objects.append({**raw, "shape": list(shard_shape(tuple(obj.shape), rule, r))} if rule else dict(raw))
+            if MLP_Q8 and is_text_mlp(obj.name):
+                shape = list(shard_shape(tuple(obj.shape), rule, r))
+                objects.append({**raw, "shape": shape, "format": "q8_g32_fp16", "layout": "row_split_k128_v1"})
+            else:
+                objects.append({**raw, "shape": list(shard_shape(tuple(obj.shape), rule, r))} if rule else dict(raw))
         directory = derive_directory(
             art.v3, objects, dropped=dropped, row_scale=row_scale,
             metadata={"tensor_parallel": {"ranks": TP, "rank": r,
-                                          "mlp_intermediate": [MLP_RANK0, MLP_FULL - MLP_RANK0]}},
+                                          "mlp_intermediate": [MLP_RANK0, MLP_FULL - MLP_RANK0],
+                                          **({"mlp_source": "Q8_0 GGUF, W8G32_F16S"} if MLP_Q8 else {})}},
             provenance={"tensor_parallel_split": {"tool": "tools.tp2.shard_qwen38_27b",
                                                   "source_artifact_id": art.artifact_id.hex()}},
             drop_components=("dflash2",) if DROP else ())
@@ -184,7 +237,10 @@ def build_v3(art: Artifact, prefix: str) -> None:
         payload = art.payload(obj)
         rule = rules[raw["id"]]
         for r in range(TP):
-            writers[r].write(raw["id"], shard_payload(obj, payload, rule, r) if rule else payload)
+            if MLP_Q8 and is_text_mlp(obj.name):
+                writers[r].write(raw["id"], q8_mlp_payload(obj.name, rule, r)[0])
+            else:
+                writers[r].write(raw["id"], shard_payload(obj, payload, rule, r) if rule else payload)
         if rule and i % 40 == 0:
             print(f"[{i}/{len(keep)}] {obj.name} {tuple(obj.shape)} -> {shard_shape(tuple(obj.shape), rule, 0)}"
                   f" + {shard_shape(tuple(obj.shape), rule, 1)}", flush=True)

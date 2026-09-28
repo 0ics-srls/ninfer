@@ -248,6 +248,155 @@ __global__ __launch_bounds__(W8VoltaQpnSchedule::kThreads, 8) void w8_volta_qpn_
     }
 }
 
+#ifdef NINFER_ADA_BUILD
+// Ada (sm_89) W8 decode GEMV: the Volta kernel's CTA (32 output rows, warps splitting K, one barrier for the
+// K reduce) on mma.m16n8k16, weights as the A operand (two 16-row halves), tokens on N (T <= 8). Lane (g, q)
+// reads 8 contiguous code bytes k = 8q..8q+7 of a 32-k group from rows g and g+8 of each half, and the same 8
+// activations of token g. The m16n8k16 k slots of lane q ({2q, 2q+1} and {2q+8, 2q+9} of two 16-k slices) are
+// relabelled onto those 8 real k identically for A and B, so each slice still contracts matching k.
+__device__ __forceinline__ void w8_ada_mma(float (&d)[4], std::uint32_t a0, std::uint32_t a1, std::uint32_t a2,
+                                           std::uint32_t a3, std::uint32_t b0, std::uint32_t b1) {
+    asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
+                 "{%0, %1, %2, %3}, {%4, %5, %6, %7}, {%8, %9}, {%0, %1, %2, %3};"
+                 : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3])
+                 : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(b0), "r"(b1));
+}
+
+// 8 signed code bytes -> 4 half2 (bytes 0-1, 2-3, 4-5, 6-7) times the group scale, as the Volta decode does.
+__device__ __forceinline__ void w8_ada_decode(uint2 raw, half2 scale, std::uint32_t (&out)[4]) {
+    const half2 bias = __half2half2(__ushort_as_half(0x6480)); // 1152.0
+#pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const std::uint32_t src   = ((j < 2) ? raw.x : raw.y) ^ 0x80808080u;
+        const int shift           = (j & 1) * 16;
+        std::uint32_t bits = (((src >> shift) & 0xffu) | (((src >> shift) & 0xff00u) << 8)) | 0x64006400u;
+        half2 v            = __hmul2(__hsub2(*reinterpret_cast<half2*>(&bits), bias), scale);
+        out[j]             = *reinterpret_cast<std::uint32_t*>(&v);
+    }
+}
+
+template <int SPLITK>
+__global__ __launch_bounds__(SPLITK * 32) void w8_ada_qpn_gemm_kernel(
+    const std::uint8_t* __restrict__ codes, const std::uint8_t* __restrict__ scales,
+    const __nv_bfloat16* __restrict__ x, __nv_bfloat16* __restrict__ out, int n, int k, int t,
+    int padded_groups, int out_ld) {
+    constexpr int kCols   = 32;
+    constexpr int kGroupK = W8RowSplitStorage::kGroupK;
+    constexpr int kBlk    = 4;
+    __shared__ float cs[SPLITK][8 * kCols];
+
+    const int lane   = static_cast<int>(threadIdx.x) & 31;
+    const int warp   = static_cast<int>(threadIdx.x) >> 5;
+    const int g      = lane >> 2;
+    const int q      = lane & 3;
+    const int groups = k / kGroupK;
+    const int gq     = groups / SPLITK;
+    const int g0     = warp * gq;
+    const int gend   = warp == SPLITK - 1 ? groups : g0 + gq;
+
+    // Rows g, g+8, g+16, g+24 of this CTA's 32 (clamped reads past n are discarded at the store).
+    const std::uint8_t* crow[4];
+    const std::uint16_t* srow[4];
+#pragma unroll
+    for (int i = 0; i < 4; ++i) {
+        int row = static_cast<int>(blockIdx.x) * kCols + g + 8 * i;
+        row     = row < n ? row : n - 1;
+        crow[i] = codes + static_cast<std::int64_t>(row) * padded_groups * kGroupK + 8 * q;
+        srow[i] = reinterpret_cast<const std::uint16_t*>(scales) + static_cast<std::int64_t>(row) * padded_groups;
+    }
+    const bool live = g < t;
+    const __nv_bfloat16* xrow = x + static_cast<std::int64_t>(live ? g : 0) * k + 8 * q;
+
+    float c[2][2][4];
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+#pragma unroll
+        for (int a = 0; a < 2; ++a) {
+#pragma unroll
+            for (int i = 0; i < 4; ++i) { c[h][a][i] = 0.0f; }
+        }
+    }
+
+    auto body = [&](int grp, int acc, const uint2 (&cw)[4], const std::uint16_t (&sc)[4]) {
+        std::uint32_t b[2][2] = {{0u, 0u}, {0u, 0u}};
+        if (live) {
+            const uint4 raw = *reinterpret_cast<const uint4*>(xrow + static_cast<std::int64_t>(grp) * kGroupK);
+            const auto* v   = reinterpret_cast<const __nv_bfloat16*>(&raw);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+                half2 h2 = __halves2half2(__float2half(__bfloat162float(v[2 * j])),
+                                          __float2half(__bfloat162float(v[2 * j + 1])));
+                b[j >> 1][j & 1] = *reinterpret_cast<std::uint32_t*>(&h2);
+            }
+        }
+        std::uint32_t w[4][4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) { w8_ada_decode(cw[i], __half2half2(__ushort_as_half(sc[i])), w[i]); }
+        // Half h: rows (g, g+8) = w[2h], w[2h+1]. Slice 0 uses code pairs 0-1 and 2-3, slice 1 pairs 4-5 and 6-7.
+#pragma unroll
+        for (int h = 0; h < 2; ++h) {
+            w8_ada_mma(c[h][acc], w[2 * h][0], w[2 * h + 1][0], w[2 * h][1], w[2 * h + 1][1], b[0][0], b[0][1]);
+            w8_ada_mma(c[h][acc], w[2 * h][2], w[2 * h + 1][2], w[2 * h][3], w[2 * h + 1][3], b[1][0], b[1][1]);
+        }
+    };
+
+    int gb = g0;
+    for (; gb + kBlk <= gend; gb += kBlk) {
+        uint2 cw[kBlk][4];
+        std::uint16_t sc[kBlk][4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+#pragma unroll
+            for (int e = 0; e < kBlk; ++e) {
+                cw[e][i] = __ldg(reinterpret_cast<const uint2*>(crow[i] + static_cast<std::int64_t>(gb + e) * kGroupK));
+            }
+            if ((gb % kBlk) == 0) {
+                const uint2 packed = __ldg(reinterpret_cast<const uint2*>(srow[i] + gb));
+                const auto* s4     = reinterpret_cast<const std::uint16_t*>(&packed);
+#pragma unroll
+                for (int e = 0; e < kBlk; ++e) { sc[e][i] = s4[e]; }
+            } else {
+#pragma unroll
+                for (int e = 0; e < kBlk; ++e) { sc[e][i] = __ldg(srow[i] + gb + e); }
+            }
+        }
+#pragma unroll
+        for (int e = 0; e < kBlk; ++e) { body(gb + e, e & 1, cw[e], sc[e]); }
+    }
+    for (; gb < gend; ++gb) {
+        uint2 cw[4];
+        std::uint16_t sc[4];
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            cw[i] = __ldg(reinterpret_cast<const uint2*>(crow[i] + static_cast<std::int64_t>(gb) * kGroupK));
+            sc[i] = __ldg(srow[i] + gb);
+        }
+        body(gb, 0, cw, sc);
+    }
+
+#pragma unroll
+    for (int h = 0; h < 2; ++h) {
+#pragma unroll
+        for (int i = 0; i < 4; ++i) {
+            const int token = 2 * q + (i & 1);
+            const int col   = h * 16 + g + 8 * (i >> 1);
+            cs[warp][token * kCols + col] = c[h][0][i] + c[h][1][i];
+        }
+    }
+    __syncthreads();
+    for (int e = static_cast<int>(threadIdx.x); e < 8 * kCols; e += SPLITK * 32) {
+        const int token = e / kCols;
+        const int ocol  = static_cast<int>(blockIdx.x) * kCols + e % kCols;
+        if (token < t && ocol < n) {
+            float v = 0.0f;
+#pragma unroll
+            for (int w = 0; w < SPLITK; ++w) { v += cs[w][e]; }
+            out[static_cast<std::int64_t>(token) * out_ld + ocol] = __float2bfloat16(v);
+        }
+    }
+}
+#endif // NINFER_ADA_BUILD
+
 #endif // sm_70
 
 } // namespace ninfer::ops::detail

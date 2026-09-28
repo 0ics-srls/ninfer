@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "ops/common/tp2_shape.h"
 #include "ops/linear/w8/w8_dispatch.h"
 #include "ops/linear/w8/w8_feature.h"
@@ -252,6 +253,15 @@ W8Launch select_w8_launch(std::int32_t n, std::int32_t k, std::int32_t t, Linear
                               (n == 3072 && k == 5120) || (n == 512 && k == 5120);
         if (tp2_half && t > 0) {
             if (w8_uses_volta_qpn(n, k, t)) { return launch_w8_volta_qpn; }
+#ifdef NINFER_ADA_BUILD
+            // Ada: the shape-generic Ampere route (mma.m16n8k16 + cp.async) instead of the Volta m8n8k4 one
+            // (NINFER_W8_ADA_MMA=0 keeps the Volta routes, for A/B checks).
+            static const bool ampere = [] {
+                const char* v = std::getenv("NINFER_W8_ADA_MMA");
+                return v == nullptr || v[0] != 0;
+            }();
+            if (ampere) { return launch_w8_mma_r64_c128; }
+#endif
             if (w8_uses_volta_mma(n, k, t)) { return launch_w8_volta_mma; }
             return launch_w8_simt_r8_c8;
         }
