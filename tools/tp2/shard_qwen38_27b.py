@@ -11,7 +11,8 @@ Every split is done on exact stored words (FP8 codes + row scales, NVFP4 packed 
 scales + divisor, W8 groups + scales, BF16/FP32 values) and re-encoded with tools.artifact, so the
 two halves re-concatenate bit-exactly to the source (see --verify).
 
-usage: python -m tools.tp2.shard_qwen38_27b SRC OUT_PREFIX [--verify]
+usage: python -m tools.tp2.shard_qwen38_27b SRC OUT_PREFIX [--verify] [--drop-dflash2]
+       --drop-dflash2 leaves the DFlash2 companion weights (optional component, not sharded here) out of both ranks.
        writes OUT_PREFIX.rank0.ninfer and OUT_PREFIX.rank1.ninfer
 """
 from __future__ import annotations
@@ -137,10 +138,19 @@ def shard_payload(obj: TensorObject, raw: memoryview, rule: Rule, rank: int) -> 
     raise ValueError(f"no shard rule for format {fmt} ({obj.name})")
 
 
+DROP = ("dflash2/",) if "--drop-dflash2" in sys.argv else ()
+
+
+def kept(name: str) -> bool:
+    return not name.startswith(DROP) if DROP else True
+
+
 def build(src: str, prefix: str) -> None:
     art = Artifact.open(src)
     specs = []
     for obj in art.objects:
+        if not kept(obj.name):
+            continue
         if isinstance(obj, TensorObject):
             rule = rule_for(obj.name)
             shape = shard_shape(tuple(obj.shape), rule) if rule else tuple(obj.shape)
@@ -150,6 +160,8 @@ def build(src: str, prefix: str) -> None:
     identity = ArtifactIdentity(art.identity.model_id, art.identity.weights_id + "-tp2")
     writers = [ArtifactWriter(f"{prefix}.rank{r}.ninfer", identity, specs) for r in range(TP)]
     for i, obj in enumerate(art.objects):
+        if not kept(obj.name):
+            continue
         raw = art.payload(obj)
         rule = rule_for(obj.name) if isinstance(obj, TensorObject) else None
         for r in range(TP):
@@ -167,6 +179,8 @@ def verify(src: str, prefix: str, limit: int = 0) -> None:
     ranks = [Artifact.open(f"{prefix}.rank{r}.ninfer") for r in range(TP)]
     checked = 0
     for obj in art.objects:
+        if not kept(obj.name):
+            continue
         if not isinstance(obj, TensorObject):
             assert all(bytes(rk.payload(obj.name)) == bytes(art.payload(obj)) for rk in ranks)
             continue
