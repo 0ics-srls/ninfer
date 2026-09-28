@@ -216,7 +216,9 @@ __launch_bounds__(Schedule::kThreads, Schedule::kMinBlocksPerSm) void nvfp4_w4a4
 // hardware on Volta -- see docs/v100.md). Same fix as
 // w8_rowsplit_gemm_medium_t_splitk.cuh: the whole body needs to be behind the guard,
 // not just the mma calls within it.
-#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 800
+// Volta execution path (sm_70, and sm_89 for the 4090 rank) never routes to the W4A4 MMA kernels, and on Ada
+// their static staging (54 KB) exceeds the 48 KB cap: keep the body only where it can run.
+#if !defined(__CUDA_ARCH__) || (__CUDA_ARCH__ >= 800 && !defined(NINFER_VOLTA_BUILD))
     static_assert((Geometry::kInputRows % Schedule::kBlockK) == 0);
     static_assert((Geometry::kOutputRows % Schedule::kBlockN) == 0);
     static_assert(!PairRows || (Schedule::kBlockN % 2) == 0);
