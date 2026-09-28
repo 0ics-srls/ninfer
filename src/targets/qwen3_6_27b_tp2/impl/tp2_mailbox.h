@@ -38,8 +38,11 @@ struct alignas(128) MailboxShared {
 
 // stats: block 0 adds its wait for the peer's flag (ns) to pad0[rank * 4] and counts calls in pad0[rank * 4 + 1]
 // (NINFER_TP_STATS=1; read from the mailbox file while serving).
+// Per block kind (slot 0 attention, 1 GDN, 2 MLP, 3 other) the same pair goes to
+// gflag[rank][kGatherMaxBlocks - 1][slot * 2 + 0/1], a line the row gather never uses.
 void launch_mailbox_allreduce(__nv_bfloat16* x, int elements, int rank, MailboxShared* mailbox,
-                              std::uint64_t* steps, cudaStream_t stream, bool stats = false);
+                              std::uint64_t* steps, cudaStream_t stream, bool stats = false,
+                              int slot = 3);
 
 // out[N, T] (leading dimension N = 2 * local_rows) <- both ranks' local [local_rows, T] blocks.
 void launch_mailbox_gather_rows(const __nv_bfloat16* local, int local_rows, int t,

@@ -12,7 +12,7 @@ __device__ __forceinline__ std::uint64_t global_ns() {
 }
 
 __global__ void mailbox_allreduce_kernel(__nv_bfloat16* x, int n, int rank, MailboxShared* mb,
-                                         std::uint64_t* steps, bool stats) {
+                                         std::uint64_t* steps, bool stats, int slot) {
     const int blk            = static_cast<int>(blockIdx.x);
     const std::uint64_t step = steps[blk] + 1;
     const int parity         = static_cast<int>(step & 1);
@@ -36,8 +36,12 @@ __global__ void mailbox_allreduce_kernel(__nv_bfloat16* x, int n, int rank, Mail
         }
         if (stats && blk == 0) {
             volatile std::uint64_t* counters = &mb->pad0[rank * 4];
-            counters[0] = counters[0] + (global_ns() - wait_begin);
+            const std::uint64_t waited = global_ns() - wait_begin;
+            counters[0] = counters[0] + waited;
             counters[1] = counters[1] + 1;
+            volatile std::uint64_t* by_kind = &mb->gflag[rank][kGatherMaxBlocks - 1][slot * 2];
+            by_kind[0] = by_kind[0] + waited;
+            by_kind[1] = by_kind[1] + 1;
         }
     }
     __syncthreads();
@@ -123,9 +127,9 @@ void launch_mailbox_gather_rows(const __nv_bfloat16* local, int local_rows, int 
 }
 
 void launch_mailbox_allreduce(__nv_bfloat16* x, int elements, int rank, MailboxShared* mailbox,
-                              std::uint64_t* steps, cudaStream_t stream, bool stats) {
+                              std::uint64_t* steps, cudaStream_t stream, bool stats, int slot) {
     const int blocks = (elements + kMailboxSlice - 1) / kMailboxSlice;
-    mailbox_allreduce_kernel<<<blocks, 64, 0, stream>>>(x, elements, rank, mailbox, steps, stats);
+    mailbox_allreduce_kernel<<<blocks, 64, 0, stream>>>(x, elements, rank, mailbox, steps, stats, slot);
     CUDA_CHECK(cudaGetLastError());
 }
 

@@ -225,7 +225,7 @@ void init() {
 
 int rank() { return g_rank; }
 
-void allreduce(Tensor& residual, cudaStream_t stream) {
+void allreduce(Tensor& residual, cudaStream_t stream, int slot) {
     if (g_comm == nullptr) { throw std::logic_error("TP2 collectives used before init()"); }
     if (residual.dtype != DType::BF16 || !residual.is_contiguous()) {
         throw std::invalid_argument("TP2 all-reduce requires a contiguous BF16 tensor");
@@ -233,7 +233,7 @@ void allreduce(Tensor& residual, cudaStream_t stream) {
     if (g_mailbox_dev != nullptr && residual.numel() <= kMailboxMaxElements) {
         launch_mailbox_allreduce(static_cast<__nv_bfloat16*>(residual.data),
                                  static_cast<int>(residual.numel()), g_rank, g_mailbox_dev,
-                                 g_mailbox_steps, stream, g_mailbox_stats);
+                                 g_mailbox_steps, stream, g_mailbox_stats, slot);
         return;
     }
     nccl_check(ncclAllReduce(residual.data, residual.data, static_cast<std::size_t>(residual.numel()),

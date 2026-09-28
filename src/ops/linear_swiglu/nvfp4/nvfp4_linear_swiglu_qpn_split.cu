@@ -1,3 +1,4 @@
+#include "ops/common/tp2_shape.h"
 #include "core/device.h"
 #include "core/tensor.h"
 #include "ops/linear/nvfp4/nvfp4_launch.h"
@@ -25,7 +26,7 @@ __global__ void bf16_to_fp16_kernel(const __nv_bfloat16* __restrict__ input,
 } // namespace
 
 bool nvfp4_linear_swiglu_qpn_split_supported(std::int32_t k, std::int32_t t) noexcept {
-    return nvfp4_volta_qpn_supported(kFullIntermediate / 2, k, t);
+    return nvfp4_volta_qpn_supported(kTp2Intermediate, k, t);  // the TP2 shard's half; the full model's is a multiple too
 }
 
 void nvfp4_linear_swiglu_qpn_split_launch(const Tensor& x, const Weight& weight, Tensor& out,

@@ -1,3 +1,4 @@
+#include "ops/common/tp2_shape.h"
 #include "ninfer/ops/linear_swiglu.h"
 
 #include "ops/linear/fp8/fp8_format.h"
@@ -51,10 +52,10 @@ std::size_t linear_swiglu_workspace_capacity_bytes(QType qtype, std::int32_t gat
         return detail::q4_linear_swiglu_capacity_workspace_bytes(
             gate_up_rows, gate_up_rows / 2, input_rows, input_rows, min_tokens, max_tokens);
     }
-    if (qtype == QType::NVFP4 && (gate_up_rows == 34816 || gate_up_rows == 17408) && input_rows == 5120) {
+    if (qtype == QType::NVFP4 && (gate_up_rows == 34816 || gate_up_rows == 2 * detail::kTp2Intermediate) && input_rows == 5120) {
         return detail::nvfp4_linear_swiglu_workspace_capacity_bytes(policy, min_tokens, max_tokens);
     }
-    if (qtype == QType::FP8_E4M3FN_ROW_BF16S && (gate_up_rows == 34816 || gate_up_rows == 17408) && input_rows == 5120) {
+    if (qtype == QType::FP8_E4M3FN_ROW_BF16S && (gate_up_rows == 34816 || gate_up_rows == 2 * detail::kTp2Intermediate) && input_rows == 5120) {
         return detail::fp8_linear_swiglu_workspace_capacity_bytes(policy, min_tokens, max_tokens);
     }
     throw std::invalid_argument("linear_swiglu workspace: unsupported weight format");
@@ -79,8 +80,10 @@ void linear_swiglu(const Tensor& x, const Weight& gate_up_weight, Tensor& out, L
                              gate_up_weight.padded_shape[1] == 5120;
 #ifdef NINFER_VOLTA_BUILD
     // TP2 rank shard of the Qwen3.8-27B MLP gate_up (NVFP4/FP8 only; Volta QPN/CUTLASS routes).
-    const bool tp2_half_shape = x.ne[0] == 5120 && out.ne[0] == 8704 && gate_up_weight.n == 17408 &&
-                                gate_up_weight.k == 5120 && gate_up_weight.padded_shape[0] == 17408 &&
+    const bool tp2_half_shape = x.ne[0] == 5120 && out.ne[0] == detail::kTp2Intermediate &&
+                                gate_up_weight.n == 2 * detail::kTp2Intermediate &&
+                                gate_up_weight.k == 5120 &&
+                                gate_up_weight.padded_shape[0] == 2 * detail::kTp2Intermediate &&
                                 gate_up_weight.padded_shape[1] == 5120 &&
                                 (gate_up_weight.qtype == QType::NVFP4 ||
                                  gate_up_weight.qtype == QType::FP8_E4M3FN_ROW_BF16S);

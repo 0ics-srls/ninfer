@@ -42,6 +42,9 @@ endif()
 if(CMAKE_CUDA_ARCHITECTURES STREQUAL "89")
   add_compile_definitions(NINFER_ADA_BUILD=1)
 endif()
+# Per-rank MLP width of the TP2 shard this binary serves (8704 = even split; see src/ops/common/tp2_shape.h).
+set(NINFER_TP2_INTERMEDIATE "8704" CACHE STRING "TP2 rank MLP intermediate width")
+add_compile_definitions(NINFER_TP2_INTERMEDIATE=${NINFER_TP2_INTERMEDIATE})
 
 project(ninfer LANGUAGES C CXX CUDA)
 

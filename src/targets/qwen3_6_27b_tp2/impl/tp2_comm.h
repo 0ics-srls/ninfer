@@ -20,8 +20,9 @@ void init();
 
 [[nodiscard]] int rank();
 
-// residual (BF16) <- sum over ranks, in place.
-void allreduce(Tensor& residual, cudaStream_t stream);
+// residual (BF16) <- sum over ranks, in place. `slot` labels the block for NINFER_TP_STATS:
+// 0 attention, 1 GDN, 2 MLP, 3 other.
+void allreduce(Tensor& residual, cudaStream_t stream, int slot = 3);
 
 // residual <- residual + sum over ranks of partial: rank 0 adds its partial, rank 1 replaces the
 // residual with its partial, then one all-reduce.

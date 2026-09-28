@@ -1,3 +1,4 @@
+#include "ops/common/tp2_shape.h"
 #include "targets/qwen3_6_27b_tp2/impl/load/bindings.h"
 
 #include "artifact/typed_binding.h"
@@ -181,8 +182,8 @@ Weight row_view(const Weight& block, std::int32_t row_begin, std::int32_t row_co
 DensePostMixerPayload load_mlp(const MlpPlan& plan,
                                const artifact::MaterializedArtifact& materialized) {
     DensePostMixerPayload out;
-    out.gate_up = materialized_weight(materialized, plan.gate_up, 17408, 5120);
-    out.down    = materialized_weight(materialized, plan.down, 5120, 8704);
+    out.gate_up = materialized_weight(materialized, plan.gate_up, 2 * ::ninfer::ops::detail::kTp2Intermediate, 5120);
+    out.down    = materialized_weight(materialized, plan.down, 5120, ::ninfer::ops::detail::kTp2Intermediate);
 #ifdef NINFER_VOLTA_BUILD
     if (out.gate_up.qtype == QType::NVFP4) {
         ::ninfer::ops::detail::nvfp4_prepack_qpn_sm70(out.gate_up);
@@ -285,9 +286,9 @@ void bind_groupwise_text_layers(artifact::Binder& binder, BindingPlan& out) {
         target.post_attention_norm = artifact::bind_device_tensor(
             binder, prefix + "post_attention_norm", NumericFormat::BF16, {5120});
         target.mlp.gate_up =
-            bind_weight(binder, prefix + "mlp/gate_up", NumericFormat::Q4G64_F16S, {17408, 5120});
+            bind_weight(binder, prefix + "mlp/gate_up", NumericFormat::Q4G64_F16S, {2 * ::ninfer::ops::detail::kTp2Intermediate, 5120});
         target.mlp.down =
-            bind_weight(binder, prefix + "mlp/down", NumericFormat::Q5G64_F16S, {5120, 8704});
+            bind_weight(binder, prefix + "mlp/down", NumericFormat::Q5G64_F16S, {5120, ::ninfer::ops::detail::kTp2Intermediate});
     }
 }
 
@@ -354,9 +355,9 @@ void bind_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out) {
         target.post_attention_norm = artifact::bind_device_tensor(
             binder, prefix + "post_attention_norm", NumericFormat::BF16, {5120});
         target.mlp.gate_up =
-            bind_nvfp4_weight(binder, prefix + "mlp/gate_up", 17408, 5120,
+            bind_nvfp4_weight(binder, prefix + "mlp/gate_up", 2 * ::ninfer::ops::detail::kTp2Intermediate, 5120,
                               prefix + "mlp/gate_up_projection/input_scale_divisor");
-        target.mlp.down = bind_nvfp4_weight(binder, prefix + "mlp/down", 5120, 8704,
+        target.mlp.down = bind_nvfp4_weight(binder, prefix + "mlp/down", 5120, ::ninfer::ops::detail::kTp2Intermediate,
                                             prefix + "mlp/down_projection/input_scale_divisor");
     }
 }
@@ -403,13 +404,13 @@ void bind_qwen38_nvfp4_text_layers(artifact::Binder& binder, BindingPlan& out) {
             binder, prefix + "post_attention_norm", NumericFormat::BF16, {5120});
         if (layer < 56) {
             target.mlp.gate_up =
-                bind_nvfp4_weight(binder, prefix + "mlp/gate_up", 17408, 5120,
+                bind_nvfp4_weight(binder, prefix + "mlp/gate_up", 2 * ::ninfer::ops::detail::kTp2Intermediate, 5120,
                                   prefix + "mlp/gate_up_projection/input_scale_divisor");
-            target.mlp.down = bind_nvfp4_weight(binder, prefix + "mlp/down", 5120, 8704,
+            target.mlp.down = bind_nvfp4_weight(binder, prefix + "mlp/down", 5120, ::ninfer::ops::detail::kTp2Intermediate,
                                                 prefix + "mlp/down_projection/input_scale_divisor");
         } else {
-            target.mlp.gate_up = bind_weight(binder, prefix + "mlp/gate_up", kFp8, {17408, 5120});
-            target.mlp.down    = bind_weight(binder, prefix + "mlp/down", kFp8, {5120, 8704});
+            target.mlp.gate_up = bind_weight(binder, prefix + "mlp/gate_up", kFp8, {2 * ::ninfer::ops::detail::kTp2Intermediate, 5120});
+            target.mlp.down    = bind_weight(binder, prefix + "mlp/down", kFp8, {5120, ::ninfer::ops::detail::kTp2Intermediate});
         }
     }
 }
@@ -448,9 +449,9 @@ DFlash2Plan bind_dflash2(artifact::Binder& binder, artifact::TensorPlacement pla
             bind_weight(binder, prefix + "mlp_conv/kernel_projection", NumericFormat::BF16,
                         {1280, 5120}, placement);
         target.gate_up = bind_weight(binder, prefix + "mlp/gate_up", NumericFormat::W8G32_F16S,
-                                     {17408, 5120}, placement);
+                                     {2 * ::ninfer::ops::detail::kTp2Intermediate, 5120}, placement);
         target.down    = bind_weight(binder, prefix + "mlp/down", NumericFormat::W8G32_F16S,
-                                     {5120, 8704}, placement);
+                                     {5120, ::ninfer::ops::detail::kTp2Intermediate}, placement);
     }
     out.final_norm = bind_tensor("dflash2/final_norm", NumericFormat::BF16, {5120});
     out.candidate_selector.hidden_projection =
@@ -541,10 +542,10 @@ ArtifactLoadPlan bind_artifact(artifact::Binder& binder, WeightsProfile weights_
     out.mtp.post_attention_norm =
         bind_mtp("mtp/layer/post_attention_norm", NumericFormat::BF16, {5120});
     out.mtp.mlp.gate_up = WeightPlan{
-        .object = bind_mtp("mtp/layer/mlp/gate_up", NumericFormat::W8G32_F16S, {17408, 5120}),
+        .object = bind_mtp("mtp/layer/mlp/gate_up", NumericFormat::W8G32_F16S, {2 * ::ninfer::ops::detail::kTp2Intermediate, 5120}),
         .format = NumericFormat::W8G32_F16S};
     out.mtp.mlp.down = WeightPlan{
-        .object = bind_mtp("mtp/layer/mlp/down", NumericFormat::W8G32_F16S, {5120, 8704}),
+        .object = bind_mtp("mtp/layer/mlp/down", NumericFormat::W8G32_F16S, {5120, ::ninfer::ops::detail::kTp2Intermediate}),
         .format = NumericFormat::W8G32_F16S};
     out.mtp.final_norm = bind_mtp("mtp/final_norm", NumericFormat::BF16, {5120});
 
@@ -705,8 +706,8 @@ LoadedModelData::LoadedModelData(BindingPlan plan, artifact::MaterializedArtifac
                 backing, layer_source.mlp_conv.base_kernel, NumericFormat::BF16, {5120, 2, 2});
             target.mlp_conv.kernel_projection =
                 materialized_weight(backing, layer_source.mlp_conv.kernel_projection, 1280, 5120);
-            target.gate_up = materialized_weight(backing, layer_source.gate_up, 17408, 5120);
-            target.down    = materialized_weight(backing, layer_source.down, 5120, 8704);
+            target.gate_up = materialized_weight(backing, layer_source.gate_up, 2 * ::ninfer::ops::detail::kTp2Intermediate, 5120);
+            target.down    = materialized_weight(backing, layer_source.down, 5120, ::ninfer::ops::detail::kTp2Intermediate);
         }
         dflash2.final_norm =
             artifact::materialized_tensor(backing, source.final_norm, NumericFormat::BF16, {5120});
