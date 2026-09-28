@@ -105,6 +105,35 @@ __global__ void dequant_nvfp4_qpn_to_fp16(const std::uint8_t* __restrict__ codes
     const int group      = segment / 2;
     const int group_half = segment & 1;
     const int local_row  = row & 31;
+#ifdef NINFER_ADA_BUILD
+    {
+        // Ada prepack order (see nvfp4_prepack_sm70.cu): the row's 16 codes of a group are spread over four lanes.
+        const int half_tile = local_row >> 4;
+        const int g         = local_row & 7;
+        const int hi        = (local_row >> 3) & 1;
+        const int groups    = k / 16;
+        const std::int64_t tile_group = static_cast<std::int64_t>(row / 32) * groups + group;
+        const half rebias      = __float2half_rn(16384.0f);
+        const half coefficient = __hmul(__low2half(decode_e4m3_scale_shift(
+                                            scales[tile_group * 32 + g * 4 + half_tile * 2 + hi])),
+                                        __float2half_rn(inverse_weight_divisor * 256.0f));
+        half values[8];
+#pragma unroll
+        for (int j = 0; j < 8; ++j) {
+            const int q    = j >> 1;
+            const int p    = hi + 2 * group_half + 4 * (j & 1);
+            const std::uint8_t byte =
+                codes[(tile_group * 32 + g * 4 + q) * 8 + half_tile * 4 + (p >> 1)];
+            const unsigned nibble = (p & 1) != 0 ? byte >> 4 : byte & 0x0fu;
+            const auto bits = static_cast<unsigned short>(((nibble & 8u) << 12) | ((nibble & 7u) << 9));
+            values[j] = __hmul(__hmul(__ushort_as_half(bits), rebias), coefficient);
+        }
+        auto* destination = reinterpret_cast<uint4*>(
+            out + static_cast<std::int64_t>(row) * k + segment * 8);
+        *destination = *reinterpret_cast<const uint4*>(values);
+        return;
+    }
+#endif
     const int qp         = local_row / 8;
     const int r          = local_row & 7;
     const int lane       = (qp << 2) | (r & 3) | ((r & 4) << 2);
