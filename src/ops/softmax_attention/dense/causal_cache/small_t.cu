@@ -64,6 +64,19 @@ std::int32_t causal_small_t_split_upper_bound(std::int32_t window) {
         constexpr std::int32_t kDefaultLongKeys =
             Geometry::QHeads == 12 ? 1920 : 480 / Geometry::SmallTSplitScale;
         include_tier(window, long_keys > 0 ? long_keys : kDefaultLongKeys);
+#if defined(NINFER_VOLTA_BUILD) && !defined(NINFER_ADA_BUILD)
+        // One CTA per SM (8 warps, 90 KB of shared memory): round the long-window split count up to whole waves,
+        // a multiple of SMs / KV heads (NINFER_SM70_SPLIT_WAVES=0 keeps the plain count).
+        static const std::int32_t wave = [] {
+            const char* v = std::getenv("NINFER_SM70_SPLIT_WAVES");
+            if (v != nullptr && v[0] == '0') { return 0; }
+            int device = 0, sms = 0;
+            cudaGetDevice(&device);
+            cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
+            return sms / Geometry::KVHeads;
+        }();
+        if (wave > 0) { splits = div_up(splits, wave) * wave; }
+#endif
     }
 
     return (splits < Geometry::SmallTMaximumSplits) ? splits : Geometry::SmallTMaximumSplits;
