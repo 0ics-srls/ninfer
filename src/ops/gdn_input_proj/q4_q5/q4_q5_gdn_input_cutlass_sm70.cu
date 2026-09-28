@@ -10,6 +10,7 @@
 #include "cutlass/bfloat16.h"
 #include "cutlass/half.h"
 #include "cutlass/epilogue/thread/linear_combination.h"
+#include "ops/common/cutlass_fp16_arch.h"
 
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
@@ -103,11 +104,11 @@ using LayoutInputB = cutlass::layout::ColumnMajor;
 using LayoutOutput = cutlass::layout::RowMajor;
 
 using MMAOp  = cutlass::arch::OpClassTensorOp;
-using SmArch = cutlass::arch::Sm70;
+using SmArch = CutlassFp16TensorArch;
 
 using ShapeMMAThreadBlock = cutlass::gemm::GemmShape<128, 128, 32>;
 using ShapeMMAWarp        = cutlass::gemm::GemmShape<64, 64, 32>;
-using ShapeMMAOp          = cutlass::gemm::GemmShape<8, 8, 4>;
+using ShapeMMAOp          = CutlassFp16TensorOpShape;
 
 using SwizzleThreadBlock = cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>;
 
@@ -115,7 +116,7 @@ using EpilogueOp = cutlass::epilogue::thread::LinearCombination<
     ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value, ElementAccumulator,
     ElementComputeEpilogue>;
 
-constexpr int kNumStages = 2;
+constexpr int kNumStages = kCutlassFp16TensorStages;
 
 using Gemm = cutlass::gemm::device::Gemm<ElementInputA, LayoutInputA, ElementInputB, LayoutInputB,
                                          ElementOutput, LayoutOutput, ElementAccumulator, MMAOp,
