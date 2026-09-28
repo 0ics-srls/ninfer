@@ -213,16 +213,8 @@ void validate_tokenizer_config(const FrontendResources& resources) {
         throw std::invalid_argument(
             "tokenizer_config.json does not use the official <|endoftext|> pad token");
     }
-    if (!tokenizer_config.contains("chat_template") ||
-        !tokenizer_config.at("chat_template").is_string()) {
-        throw std::invalid_argument(
-            "tokenizer_config.json.chat_template must contain the loaded chat template");
-    }
-    if (tokenizer_config.at("chat_template").get_ref<const std::string&>() !=
-        resources.chat_template_jinja) {
-        throw std::invalid_argument(
-            "tokenizer_config.json.chat_template does not match frontend/chat_template.jinja");
-    }
+    // frontend/chat_template.jinja is authoritative: NInfer v3 artifacts carry the maintained template there and keep
+    // the checkpoint's original one in tokenizer_config.json.
 }
 
 fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources) {
