@@ -1,3 +1,4 @@
+#include "ops/linear/w8/w8_volta_qpn_prepacked.h"
 #include <cstdlib>
 #include "ops/common/tp2_shape.h"
 #include "ops/linear/w8/w8_dispatch.h"
@@ -241,6 +242,30 @@ bool w8_uses_volta_mma(std::int32_t n, std::int32_t k, std::int32_t t) noexcept 
 }
 #endif
 
+#if defined(NINFER_VOLTA_BUILD) && !defined(NINFER_ADA_BUILD)
+// TP2 MLP shapes on the V100: prepacked weights (text MLP) take the prepacked kernel, row-major ones (MTP layer)
+// the existing routes.
+void launch_w8_tp2_v100(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    if (w.layout == QuantLayout::VoltaQpnPrepacked) {
+        launch_w8_prepacked(x, w, out, stream);
+        return;
+    }
+    const std::int32_t n = w.n, k = w.k, t = x.ne[1];
+    if (w8_uses_volta_qpn(n, k, t)) { launch_w8_volta_qpn(x, w, out, stream); return; }
+    if (w8_uses_volta_mma(n, k, t)) { launch_w8_volta_mma(x, w, out, stream); return; }
+    launch_w8_simt_r8_c8(x, w, out, stream);
+}
+#endif
+
+#ifdef NINFER_ADA_BUILD
+// TP2 decode widths on Ada: the small-T kernel at the MLP shapes, else the m16n8k16 QPN companion.
+void launch_w8_tp2_decode(const Tensor& x, const Weight& w, Tensor& out, cudaStream_t stream) {
+    if (launch_w8_tp2_small_t(x, w, out, stream)) { return; }
+    if (x.ne[1] <= 8) { launch_w8_volta_qpn(x, w, out, stream); return; }
+    launch_w8_mma_r64_c128(x, w, out, stream);
+}
+#endif
+
 W8Launch select_w8_launch(std::int32_t n, std::int32_t k, std::int32_t t, LinearPolicy policy) {
     switch (policy) {
     case LinearPolicy::A16Only:
@@ -252,6 +277,12 @@ W8Launch select_w8_launch(std::int32_t n, std::int32_t k, std::int32_t t, Linear
                               (n == 2 * kTp2Intermediate && k == 5120) || (n == 5120 && k == kTp2Intermediate) ||
                               (n == 3072 && k == 5120) || (n == 512 && k == 5120);
         if (tp2_half && t > 0) {
+#if !defined(NINFER_ADA_BUILD)
+            return launch_w8_tp2_v100;
+#endif
+#ifdef NINFER_ADA_BUILD
+            if (t <= 32) { return launch_w8_tp2_decode; }
+#endif
             if (w8_uses_volta_qpn(n, k, t)) { return launch_w8_volta_qpn; }
 #ifdef NINFER_ADA_BUILD
             // Ada: the shape-generic Ampere route (mma.m16n8k16 + cp.async) instead of the Volta m8n8k4 one

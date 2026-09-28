@@ -3,6 +3,7 @@
 #include "core/device.h"
 #include "ops/linear/w8/w8_config.h"
 #include "ops/linear/w8/w8_small_t_mma.cuh"
+#include "ops/common/tp2_shape.h"
 
 #include <array>
 #include <cstddef>
@@ -80,7 +81,58 @@ constexpr auto kDFlash2AttentionLaunchers = make_launchers<W8DFlash2AttentionPro
                                                            kW8DFlash2AttentionFirstSmallT>(
     std::make_index_sequence<kW8DFlash2AttentionLastSmallT - kW8DFlash2AttentionFirstSmallT + 1>{});
 
+#ifdef NINFER_ADA_BUILD
+// TP2 rank shapes of the 8-bit MLP on the RTX 4090 (ops/common/tp2_shape.h). One 8-token tile, four K warps
+// (K must divide by 256), direct scale loads up to T = 4 as the full-model MTP schedules do.
+using W8Tp2GateUpGeometry = W8LinearGeometry<2 * kTp2Intermediate, 5120>;
+using W8Tp2DownGeometry   = W8LinearGeometry<5120, kTp2Intermediate>;
+
+template <class Geometry, int ActiveTokens, int MinBlocks>
+void launch_tp2_exact(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
+    constexpr auto kScale = ActiveTokens > 4 ? W8SmallTMmaScaleAccess::Shared : W8SmallTMmaScaleAccess::Direct;
+    constexpr auto kStage = ActiveTokens <= 4 ? W8SmallTMmaActivationStage::PaddedZero
+                                              : W8SmallTMmaActivationStage::ActiveOnly;
+    constexpr int kTile   = ActiveTokens <= 8 ? 8 : ActiveTokens <= 16 ? 16 : ActiveTokens <= 24 ? 24 : 32;
+    using Schedule = W8SmallTMmaSchedule<4, kTile, kTile <= 8 ? MinBlocks : 2, kScale, Cache::ca, Cache::cg, kStage>;
+    static_assert((Geometry::kOutputRows % Schedule::kRowsPerCta) == 0);
+    static_assert((Geometry::kInputRows % Schedule::kGroupK) == 0);
+    const W8ContiguousOutput output{static_cast<__nv_bfloat16*>(out.data), Geometry::kOutputRows};
+    constexpr int kBlocks = Geometry::kOutputRows / Schedule::kRowsPerCta;
+    W8_SMEM_OPT_IN((w8_small_t_mma_kernel<Geometry, ActiveTokens, Schedule, W8ContiguousOutput,
+                                          W8SmallTMmaStoreEpilogue, W8SmallTMmaIdentityRows, false>),
+                   (w8_small_t_smem_bytes<Schedule>()));
+    w8_small_t_mma_kernel<Geometry, ActiveTokens, Schedule>
+        <<<kBlocks, Schedule::kThreads, w8_small_t_smem_bytes<Schedule>(), stream>>>(
+            static_cast<const __nv_bfloat16*>(x.data), static_cast<const std::uint8_t*>(weight.qdata),
+            static_cast<const std::uint8_t*>(weight.scales), output);
+    CUDA_CHECK(cudaGetLastError());
+}
+
+template <class Geometry, int MinBlocks, std::size_t... I>
+constexpr auto tp2_launchers(std::index_sequence<I...>) {
+    return std::array<W8Launch, sizeof...(I)>{&launch_tp2_exact<Geometry, static_cast<int>(I) + 1, MinBlocks>...};
+}
+constexpr auto kTp2GateUpLaunchers = tp2_launchers<W8Tp2GateUpGeometry, 2>(std::make_index_sequence<32>{});
+constexpr auto kTp2DownLaunchers   = tp2_launchers<W8Tp2DownGeometry, 3>(std::make_index_sequence<32>{});
+#endif
+
 } // namespace
+
+#ifdef NINFER_ADA_BUILD
+bool launch_w8_tp2_small_t(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
+    const std::int32_t t = x.ne[1];
+    if (t < 1 || t > 32 || weight.padded_shape[1] != weight.k) { return false; }
+    if (weight.n == W8Tp2GateUpGeometry::kOutputRows && weight.k == W8Tp2GateUpGeometry::kInputRows) {
+        kTp2GateUpLaunchers[static_cast<std::size_t>(t - 1)](x, weight, out, stream);
+        return true;
+    }
+    if (weight.n == W8Tp2DownGeometry::kOutputRows && weight.k == W8Tp2DownGeometry::kInputRows) {
+        kTp2DownLaunchers[static_cast<std::size_t>(t - 1)](x, weight, out, stream);
+        return true;
+    }
+    return false;
+}
+#endif
 
 void launch_w8_small_t(const Tensor& x, const Weight& weight, Tensor& out, cudaStream_t stream) {
 #ifdef NINFER_VOLTA_BUILD
