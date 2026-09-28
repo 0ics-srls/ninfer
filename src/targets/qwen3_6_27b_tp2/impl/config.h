@@ -5,6 +5,7 @@
 #include <ninfer/targets/qwen3_6/vision.h>
 
 #include <cstdint>
+#include "ops/common/tp2_shape.h"
 #include <array>
 #include <ninfer/types.h>
 
@@ -13,7 +14,7 @@ namespace ninfer::targets::qwen3_6_27b_tp2::detail {
 struct TextConfig {
     static constexpr int hidden       = 5120;
     static constexpr int layers       = 64;
-    static constexpr int intermediate = 8704; // TP2 rank shard of 17408
+    static constexpr int intermediate = ::ninfer::ops::detail::kTp2Intermediate; // this rank's shard of 17408
 
     // The output matrix is padded for the selected kernels. Only token IDs in
     // [0, token_domain) are tokenizer-addressable and valid sampling results.

@@ -1,3 +1,4 @@
+#include "ops/common/tp2_shape.h"
 #include "core/device.h"
 #include "core/tensor.h"
 #include "ops/linear/fp8/fp8_launch.h"
@@ -14,7 +15,7 @@ namespace ninfer::ops::detail {
 constexpr std::int32_t kFullIntermediate = 17408;
 
 bool fp8_linear_swiglu_qpn_split_supported(std::int32_t k, std::int32_t t) noexcept {
-    return fp8_volta_qpn_supported(kFullIntermediate / 2, k, t);
+    return fp8_volta_qpn_supported(kTp2Intermediate, k, t);  // the TP2 shard's half; the full model's is a multiple too
 }
 
 void fp8_linear_swiglu_qpn_split_launch(const Tensor& x, const Weight& weight, Tensor& out,

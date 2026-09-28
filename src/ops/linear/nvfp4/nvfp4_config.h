@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ops/common/tp2_shape.h"
 #include "ninfer/ops/linear.h"
 
 #include <cstdint>
@@ -138,7 +139,8 @@ enum class Nvfp4Problem : std::uint8_t {
 #ifdef NINFER_VOLTA_BUILD
 // TP2 rank shards of the Qwen3.8-27B MLP (see fp8_config.h): shape-generic QPN routes on Volta.
 inline constexpr bool is_nvfp4_tp2_half_problem(std::int32_t output_rows, std::int32_t input_rows) {
-    return (output_rows == 17408 && input_rows == 5120) || (output_rows == 5120 && input_rows == 8704);
+    return (output_rows == 2 * kTp2Intermediate && input_rows == 5120) ||
+           (output_rows == 5120 && input_rows == kTp2Intermediate);
 }
 #endif
 

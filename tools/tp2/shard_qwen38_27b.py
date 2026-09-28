@@ -11,7 +11,9 @@ Every split is done on exact stored words (FP8 codes + row scales, NVFP4 packed 
 scales + divisor, W8 groups + scales, BF16/FP32 values) and re-encoded with tools.artifact, so the
 two halves re-concatenate bit-exactly to the source (see --verify).
 
-usage: python -m tools.tp2.shard_qwen38_27b SRC OUT_PREFIX [--verify] [--drop-dflash2]
+usage: python -m tools.tp2.shard_qwen38_27b SRC OUT_PREFIX [--verify] [--drop-dflash2] [--mlp-rank0 N]
+       --mlp-rank0 N gives rank 0 the first N of the 17408 MLP intermediate columns (multiple of 128; default 8704 =
+       even split) and rank 1 the rest; each rank's binary must be built with that width (NINFER_TP2_INTERMEDIATE).
        --drop-dflash2 leaves the DFlash2 companion weights (optional component, not sharded here) out of both ranks.
        writes OUT_PREFIX.rank0.ninfer and OUT_PREFIX.rank1.ninfer
 """
@@ -30,10 +32,22 @@ from tools.artifact.v3 import V3Writer, derive_directory
 TP = 2
 
 
+MLP_FULL = 17408
+MLP_RANK0 = int(sys.argv[sys.argv.index("--mlp-rank0") + 1]) if "--mlp-rank0" in sys.argv else MLP_FULL // 2
+assert 0 < MLP_RANK0 < MLP_FULL and MLP_RANK0 % 128 == 0, "--mlp-rank0 must be a multiple of 128 below 17408"
+
+
 @dataclass(frozen=True)
 class Rule:
     axis: str                  # "rows" (N) or "cols" (K)
-    segments: tuple[int, ...]  # lengths of consecutive logical segments along that axis; each is halved
+    segments: tuple[int, ...]  # lengths of consecutive logical segments along that axis; each is split
+    cut: int | None = None     # rank 0 keeps [0, cut) of every segment, rank 1 the rest; None = halves
+
+    def piece(self, seg: int, rank: int) -> tuple[int, int]:
+        """(start, length) of `rank`'s part of one segment, in logical elements."""
+        if self.cut is None:
+            return rank * (seg // TP), seg // TP
+        return (0, self.cut) if rank == 0 else (self.cut, seg - self.cut)
 
 
 ATTN_QKGV = Rule("rows", (6144, 1024, 6144, 1024))
@@ -41,9 +55,9 @@ GDN_QKVZ = Rule("rows", (2048, 2048, 6144, 6144))
 GDN_AB = Rule("rows", (48, 48))
 GDN_HEADS = Rule("rows", (48,))
 GDN_CONV = Rule("cols", (2048, 2048, 6144))     # (4, 10240) taps x channels
-MLP_GATE_UP = Rule("rows", (17408, 17408))
+MLP_GATE_UP = Rule("rows", (MLP_FULL, MLP_FULL), MLP_RANK0)
 K6144 = Rule("cols", (6144,))
-K17408 = Rule("cols", (17408,))
+K17408 = Rule("cols", (MLP_FULL,), MLP_RANK0)
 
 
 def rule_for(name: str) -> Rule | None:
@@ -67,74 +81,68 @@ def rule_for(name: str) -> Rule | None:
     return None
 
 
-def shard_shape(shape: tuple[int, ...], rule: Rule) -> tuple[int, ...]:
+def rank_extent(rule: Rule, rank: int) -> int:
+    return sum(rule.piece(seg, rank)[1] for seg in rule.segments)
+
+
+def shard_shape(shape: tuple[int, ...], rule: Rule, rank: int = 0) -> tuple[int, ...]:
     if rule.axis == "rows":
         assert shape[0] == sum(rule.segments), (shape, rule)
-        return (shape[0] // TP,) + tuple(shape[1:])
+        return (rank_extent(rule, rank),) + tuple(shape[1:])
     assert shape[-1] == sum(rule.segments), (shape, rule)
-    return tuple(shape[:-1]) + (shape[-1] // TP,)
+    return tuple(shape[:-1]) + (rank_extent(rule, rank),)
 
 
-def take(t: torch.Tensor, dim: int, segments: tuple[int, ...], rank: int, unit: int = 1) -> torch.Tensor:
-    """Concatenate rank's half of each logical segment along `dim`; `unit` = storage elements per
-    logical element along that dim (e.g. 1/2 for packed NVFP4 codes is expressed via scale)."""
+def take_frac(t: torch.Tensor, dim: int, rule: Rule, rank: int, num: int = 1, den: int = 1) -> torch.Tensor:
+    """Concatenate rank's part of each logical segment along `dim`; storage elements per logical element
+    along that dim = num/den (1/2 for packed NVFP4 codes, 1/16 for their scales, 1/32 for W8 groups)."""
     parts, start = [], 0
-    for seg in segments:
-        seg_units = seg * unit
-        assert seg_units % TP == 0
-        half = seg_units // TP
-        parts.append(t.narrow(dim, start + rank * half, half))
-        start += seg_units
+    for seg in rule.segments:
+        begin, length = rule.piece(seg, rank)
+        assert (seg * num) % den == 0 and (begin * num) % den == 0 and (length * num) % den == 0, (seg, begin, length)
+        parts.append(t.narrow(dim, start + begin * num // den, length * num // den))
+        start += seg * num // den
     assert start == t.shape[dim], (start, t.shape, dim)
     return torch.cat(parts, dim=dim).contiguous()
 
 
-def take_frac(t: torch.Tensor, dim: int, segments: tuple[int, ...], rank: int, num: int, den: int) -> torch.Tensor:
-    """Like take(), with storage elements per logical element = num/den along dim."""
-    parts, start = [], 0
-    for seg in segments:
-        seg_units = seg * num // den
-        assert seg * num % den == 0 and seg_units % TP == 0
-        half = seg_units // TP
-        parts.append(t.narrow(dim, start + rank * half, half))
-        start += seg_units
-    assert start == t.shape[dim], (start, t.shape, dim)
-    return torch.cat(parts, dim=dim).contiguous()
+def take(t: torch.Tensor, dim: int, rule: Rule, rank: int) -> torch.Tensor:
+    return take_frac(t, dim, rule, rank)
 
 
 def shard_payload(obj: TensorObject, raw: memoryview, rule: Rule, rank: int) -> bytes:
     shape = tuple(obj.shape)
-    new_shape = shard_shape(shape, rule)
+    new_shape = shard_shape(shape, rule, rank)
     dim = 0 if rule.axis == "rows" else len(shape) - 1
     fmt = obj.format
     if fmt == "FP8_E4M3FN_ROW_BF16S":
         codes, scales = L.decode_fp8_row_scaled_words(raw, shape)          # [N,K] u8, [N] bf16
         if rule.axis == "rows":
-            codes, scales = take(codes, 0, rule.segments, rank), take(scales, 0, rule.segments, rank)
+            codes, scales = take(codes, 0, rule, rank), take(scales, 0, rule, rank)
         else:
-            codes = take(codes, 1, rule.segments, rank)
+            codes = take(codes, 1, rule, rank)
         return L.encode_fp8_row_scaled(codes, scales, new_shape)
     if fmt == "NVFP4":
         codes, scales, divisor = L.decode_nvfp4_words(raw, shape)          # [N,K/2], [N,K/16], ()
         if rule.axis == "rows":
-            codes, scales = take(codes, 0, rule.segments, rank), take(scales, 0, rule.segments, rank)
+            codes, scales = take(codes, 0, rule, rank), take(scales, 0, rule, rank)
         else:
-            codes = take_frac(codes, 1, rule.segments, rank, 1, 2)
-            scales = take_frac(scales, 1, rule.segments, rank, 1, 16)
+            codes = take_frac(codes, 1, rule, rank, 1, 2)
+            scales = take_frac(scales, 1, rule, rank, 1, 16)
         return L.encode_nvfp4(codes, scales, divisor, new_shape)
     if fmt == "W8G32_F16S":
         scales, codes = L.decode_row_split_codes(raw, fmt, shape)          # [N,G], [N,G,32]
         geom = L.row_split_geometry(fmt, shape)
         if rule.axis == "rows":
-            codes, scales = take(codes, 0, rule.segments, rank), take(scales, 0, rule.segments, rank)
+            codes, scales = take(codes, 0, rule, rank), take(scales, 0, rule, rank)
         else:
             assert geom.groups_per_row * 32 == shape[-1], "padded K not supported for K split"
-            codes = take_frac(codes, 1, rule.segments, rank, 1, 32)
-            scales = take_frac(scales, 1, rule.segments, rank, 1, 32)
+            codes = take_frac(codes, 1, rule, rank, 1, 32)
+            scales = take_frac(scales, 1, rule, rank, 1, 32)
         return L.encode_row_split(codes, scales, fmt, new_shape)
     if fmt in ("BF16", "FP32"):
         t = L.decode_direct(raw, fmt, shape)
-        t = take(t, dim, rule.segments, rank)
+        t = take(t, dim, rule, rank)
         return L.encode_direct(t, fmt)
     raise ValueError(f"no shard rule for format {fmt} ({obj.name})")
 
@@ -155,16 +163,19 @@ def build_v3(art: Artifact, prefix: str) -> None:
     parted = {p["object"] for b in art.v3["bindings"].values() for p in b.get("parts", [])}
     for oid, rule in rules.items():
         assert not (rule and rule.axis == "cols" and oid in parted), f"K split of fused object {oid}"
-    halved = {oid for oid, rule in rules.items() if rule and rule.axis == "rows"}
     writers = []
     for r in range(TP):
+        # Every fused part starts on a segment boundary, so its range scales with the rank's share of the segment.
+        row_scale = {oid: (rank_extent(rule, r), sum(rule.segments)) for oid, rule in rules.items()
+                     if rule and rule.axis == "rows"}
         objects = []
         for raw, obj in keep:
             rule = rules[raw["id"]]
-            objects.append({**raw, "shape": list(shard_shape(tuple(obj.shape), rule))} if rule else dict(raw))
+            objects.append({**raw, "shape": list(shard_shape(tuple(obj.shape), rule, r))} if rule else dict(raw))
         directory = derive_directory(
-            art.v3, objects, dropped=dropped, halved_rows=halved,
-            metadata={"tensor_parallel": {"ranks": TP, "rank": r}},
+            art.v3, objects, dropped=dropped, row_scale=row_scale,
+            metadata={"tensor_parallel": {"ranks": TP, "rank": r,
+                                          "mlp_intermediate": [MLP_RANK0, MLP_FULL - MLP_RANK0]}},
             provenance={"tensor_parallel_split": {"tool": "tools.tp2.shard_qwen38_27b",
                                                   "source_artifact_id": art.artifact_id.hex()}},
             drop_components=("dflash2",) if DROP else ())
@@ -175,7 +186,8 @@ def build_v3(art: Artifact, prefix: str) -> None:
         for r in range(TP):
             writers[r].write(raw["id"], shard_payload(obj, payload, rule, r) if rule else payload)
         if rule and i % 40 == 0:
-            print(f"[{i}/{len(keep)}] {obj.name} {tuple(obj.shape)} -> {shard_shape(tuple(obj.shape), rule)}", flush=True)
+            print(f"[{i}/{len(keep)}] {obj.name} {tuple(obj.shape)} -> {shard_shape(tuple(obj.shape), rule, 0)}"
+                  f" + {shard_shape(tuple(obj.shape), rule, 1)}", flush=True)
     for w in writers:
         w.finish()
     print("done", flush=True)
@@ -192,6 +204,7 @@ def build(src: str, prefix: str) -> None:
             continue
         if isinstance(obj, TensorObject):
             rule = rule_for(obj.name)
+            assert rule is None or rule.cut is None or MLP_RANK0 == MLP_FULL // 2, "uneven split needs a v3 source"
             shape = shard_shape(tuple(obj.shape), rule) if rule else tuple(obj.shape)
             specs.append(TensorSpec(obj.name, shape, obj.format, obj.layout))
         else:
@@ -238,8 +251,8 @@ def verify(src: str, prefix: str, limit: int = 0) -> None:
             dim = 0 if rule.axis == "rows" else 1
             rebuilt, off = [], [0, 0]
             for seg in rule.segments:
-                h = seg // TP
                 for r in range(TP):
+                    h = rule.piece(seg, r)[1]
                     rebuilt.append(halves[r].narrow(dim, off[r], h)); off[r] += h
             assert torch.equal(torch.cat(rebuilt, dim=dim), full), obj.name
         checked += 1

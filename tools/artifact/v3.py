@@ -142,12 +142,12 @@ def stored_view(raw: dict, name: str):
     return ("resource", name, None, None, ENCODINGS[raw["encoding"]])
 
 
-def derive_directory(source: dict, objects: list[dict], *, dropped: set[str], halved_rows: set[str],
+def derive_directory(source: dict, objects: list[dict], *, dropped: set[str], row_scale: dict[str, tuple[int, int]],
                      metadata: dict | None = None, provenance: dict | None = None,
                      drop_components: Iterable[str] = ()) -> dict:
     """Directory for a derived artifact: `objects` (in storage order, offsets assigned by V3Writer) replace the
     source objects; bindings and uses that reference dropped objects go away; ranges of fused objects whose rows
-    were halved are halved."""
+    were cut are scaled by row_scale[id] = (num, den) (every part starts on a segment boundary)."""
     bindings = {}
     for logical, binding in source["bindings"].items():
         if "object" in binding:
@@ -162,10 +162,11 @@ def derive_directory(source: dict, objects: list[dict], *, dropped: set[str], ha
         new_parts = []
         for part in parts:
             begin, end = part["range"]
-            if part["object"] in halved_rows:
-                if begin % 2 or end % 2:
-                    raise ValueError(f"binding {logical} range {part['range']} does not halve")
-                begin, end = begin // 2, end // 2
+            if part["object"] in row_scale:
+                num, den = row_scale[part["object"]]
+                if (begin * num) % den or (end * num) % den:
+                    raise ValueError(f"binding {logical} range {part['range']} does not scale by {num}/{den}")
+                begin, end = begin * num // den, end * num // den
             new_parts.append({**part, "range": [begin, end]})
         bindings[logical] = {**binding, "parts": new_parts}
     uses = []

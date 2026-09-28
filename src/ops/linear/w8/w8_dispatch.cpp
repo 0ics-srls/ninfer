@@ -1,3 +1,4 @@
+#include "ops/common/tp2_shape.h"
 #include "ops/linear/w8/w8_dispatch.h"
 #include "ops/linear/w8/w8_feature.h"
 
@@ -247,7 +248,7 @@ W8Launch select_w8_launch(std::int32_t n, std::int32_t k, std::int32_t t, Linear
         // TP2 rank shards of the Qwen3.8-27B MTP projections are not in the exact-shape table;
         // on Volta every route that table could pick is replaced by a shape-generic one anyway.
         const bool tp2_half = (n == 7168 && k == 5120) || (n == 5120 && k == 3072) ||
-                              (n == 17408 && k == 5120) || (n == 5120 && k == 8704) ||
+                              (n == 2 * kTp2Intermediate && k == 5120) || (n == 5120 && k == kTp2Intermediate) ||
                               (n == 3072 && k == 5120) || (n == 512 && k == 5120);
         if (tp2_half && t > 0) {
             if (w8_uses_volta_qpn(n, k, t)) { return launch_w8_volta_qpn; }

@@ -194,7 +194,7 @@ void Variant::attention_output_projection(const Tensor& attention, const Weight&
     } else {
         ops::linear(attention, weight, residual, text_policy(weight), workspace, stream);
     }
-    tp2::allreduce(residual, stream);
+    tp2::allreduce(residual, stream, 0);
 }
 
 void Variant::mtp_attention_projection(const Tensor& hidden,
@@ -300,7 +300,7 @@ void Variant::gdn_output_projection(const Tensor& hidden, const Weight& weight, 
     } else {
         ops::linear(hidden, weight, residual, text_policy(weight), workspace, stream);
     }
-    tp2::allreduce(residual, stream);
+    tp2::allreduce(residual, stream, 1);
 }
 
 void Variant::gdn_norm_control_projection(const Tensor& residual, const Tensor& norm_weight,
@@ -339,7 +339,7 @@ void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, 
         if (activation.ne[1] <= 32) {
             ops::linear(activation, weights.down, residual, text_policy(weights.down), workspace,
                         stream);
-            tp2::allreduce(residual, stream);
+            tp2::allreduce(residual, stream, 2);
             return;
         }
         CUDA_CHECK(cudaMemsetAsync(residual.data, 0,
@@ -350,7 +350,7 @@ void Variant::post_mixer(const Tensor& hidden, const PostMixerWeights& weights, 
     ops::linear_add(activation, weights.down, residual, text_policy(weights.down), workspace,
                     stream);
     debug::dump_last_column_once(residual, "pm_res_partial", stream);
-    tp2::allreduce(residual, stream);
+    tp2::allreduce(residual, stream, 2);
     debug::dump_last_column_once(residual, "pm_res_out", stream);
 }
 
