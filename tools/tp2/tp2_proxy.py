@@ -36,7 +36,8 @@ class Supervisor:
     # ---- process management -------------------------------------------------------------
     def rank_cmd(self, r):
         a = self.args
-        return [a.binary, f"{a.model_prefix}.rank{r}.ninfer", "--host", "127.0.0.1",
+        binary = a.binary_rank1 if (r == 1 and a.binary_rank1) else a.binary
+        return [binary, f"{a.model_prefix}.rank{r}.ninfer", "--host", "127.0.0.1",
                 "--port", str(a.rank_ports[r]), "--api-key", a.probe_key] + a.serve_args
 
     def rank_env(self, r):
@@ -152,7 +153,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
 
     def _headers_in(self):
-        return {k: v for k, v in self.headers.items() if k.lower() not in HOP and k.lower() != "host"}
+        h = {k: v for k, v in self.headers.items() if k.lower() not in HOP and k.lower() != "host"}
+        # Heterogeneous deployment (0ics-srls): clients on localhost may omit the key; the ranks still get one.
+        if self.sup.args.inject_key and not any(k.lower() in ("authorization", "x-api-key") for k in h):
+            h["Authorization"] = f"Bearer {self.sup.args.probe_key}"
+        return h
 
     def do_GET(self):
         self._passthrough("GET", None)
@@ -338,6 +343,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--listen", default="127.0.0.1:18881")
     ap.add_argument("--binary", required=True)
+    ap.add_argument("--binary-rank1", default=None,
+                    help="rank-1 binary when the two GPUs need different builds (e.g. V100 sm_70 + RTX 4090 sm_89)")
+    ap.add_argument("--inject-key", action="store_true",
+                    help="add the rank API key to client requests that carry none (localhost deployments)")
     ap.add_argument("--model-prefix", required=True)
     ap.add_argument("--rank-ports", default="18940,18941")
     ap.add_argument("--gpus", default="0,1")
@@ -358,7 +367,7 @@ def main():
     ap.add_argument("serve_args", nargs=argparse.REMAINDER)
     a = ap.parse_args()
     a.rank_ports = [int(x) for x in a.rank_ports.split(",")]
-    a.gpus = [int(x) for x in a.gpus.split(",")]
+    a.gpus = [x.strip() for x in a.gpus.split(",")]   # indices or GPU UUIDs (CUDA_VISIBLE_DEVICES)
     a.probe_key = open(a.api_key_file).read().strip()
     if a.serve_args and a.serve_args[0] == "--":
         a.serve_args = a.serve_args[1:]
