@@ -10,6 +10,7 @@
 #include "cutlass/epilogue/thread/linear_combination.h"
 #include "cutlass/gemm/device/gemm.h"
 #include "cutlass/half.h"
+#include "ops/common/cutlass_fp16_arch.h"
 
 #include <cuda_bf16.h>
 
@@ -59,12 +60,12 @@ using ElementOutput          = cutlass::bfloat16_t;
 using Gemm = cutlass::gemm::device::Gemm<
     ElementInput, cutlass::layout::RowMajor, ElementInput, cutlass::layout::ColumnMajor,
     ElementOutput, cutlass::layout::RowMajor, ElementAccumulator, cutlass::arch::OpClassTensorOp,
-    cutlass::arch::Sm70, cutlass::gemm::GemmShape<128, 128, 32>,
-    cutlass::gemm::GemmShape<64, 64, 32>, cutlass::gemm::GemmShape<8, 8, 4>,
+    CutlassFp16TensorArch, cutlass::gemm::GemmShape<128, 128, 32>,
+    cutlass::gemm::GemmShape<64, 64, 32>, CutlassFp16TensorOpShape,
     cutlass::epilogue::thread::LinearCombination<
         ElementOutput, 128 / cutlass::sizeof_bits<ElementOutput>::value, ElementAccumulator,
         ElementComputeEpilogue>,
-    cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, 2>;
+    cutlass::gemm::threadblock::GemmIdentityThreadblockSwizzle<>, kCutlassFp16TensorStages>;
 
 template <class Allocator>
 struct Scratch {
