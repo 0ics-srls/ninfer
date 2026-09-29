@@ -267,6 +267,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             conns[r].request("POST", self.path, body=body, headers=headers)
         failure = {"reason": None}
         done = [threading.Event(), threading.Event()]
+        finished = threading.Event()  # both ranks drained: wakes the watchdog at once
         upstream_socks = [conns[0].sock, conns[1].sock]
 
         def drain_rank1():
@@ -283,7 +284,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             last = sup.units()
             last_t = time.time()
             while not (done[0].is_set() and done[1].is_set()):
-                time.sleep(2)
+                # Wait on the end of the request, not a plain sleep: the handler joins this thread before it
+                # returns, and a streamed response only ends for the client when the handler returns.
+                if finished.wait(2):
+                    break
                 if sup.generation != gen:
                     return
                 if not sup.alive():
@@ -369,6 +373,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         # Wait for rank 1 to finish the same request (bounded by the watchdog).
         t1.join()
+        finished.set()
         tw.join(timeout=5)
         for c in conns:
             c.close()

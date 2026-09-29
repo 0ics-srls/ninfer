@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -273,6 +274,23 @@ struct SmallTWorkspace {
 };
 
 #ifdef NINFER_VOLTA_BUILD
+// Widths between the small-T frontier and 64 otherwise fall to the scalar prompt kernel (one CTA per
+// token and head, no key split): at 120-185k keys a 20-60 token tool-result turn took 2-6 s there.
+// Default: flash starts right after the small-T frontier (TP2, 123k keys, 36 new tokens: TTFT 2.1-5.0 s ->
+// 0.27-0.34 s, needles 3/3). NINFER_VOLTA_FLASH_MIN_WIDTH=64 restores the old threshold (A/B).
+std::int32_t volta_flash_minimum_width() {
+    static const std::int32_t value = [] {
+        constexpr std::int32_t kDefault = kMaximumVerifyTokens + 1;
+        const char* env = std::getenv("NINFER_VOLTA_FLASH_MIN_WIDTH");
+        if (env == nullptr || env[0] == '\0') return kDefault;
+        const long parsed = std::strtol(env, nullptr, 10);
+        return parsed >= 1 && parsed <= detail::kVoltaFlashMinimumWidth
+                   ? static_cast<std::int32_t>(parsed)
+                   : kDefault;
+    }();
+    return value;
+}
+
 bool volta_flash_route_possible(std::int32_t q_heads, std::int32_t width,
                                 std::int32_t batch_size, KvCacheStorage cache_storage) {
     const bool supported_geometry = q_heads == CausalD256H24Kv4::QHeads ||
@@ -281,7 +299,7 @@ bool volta_flash_route_possible(std::int32_t q_heads, std::int32_t width,
     return supported_geometry && batch_size == 1 &&
            (cache_storage == KvCacheStorage::BFloat16 ||
             cache_storage == KvCacheStorage::Int8Group64) &&
-           width >= detail::kVoltaFlashMinimumWidth;
+           width >= volta_flash_minimum_width();
 }
 
 struct VoltaFlashWorkspace {
