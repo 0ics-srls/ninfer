@@ -9,6 +9,7 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <stdexcept>
 
@@ -237,8 +238,18 @@ void launch_w8_prepacked(const Tensor& x, const Weight& w, Tensor& out, cudaStre
     const auto* scales = static_cast<const std::uint16_t*>(w.scales);
     auto* y            = static_cast<__nv_bfloat16*>(out.data);
     const half* xs = g_scratch.stage;
-    // Few 32-row tiles (n = 5120): split K over 8 warps, one wave of 2 blocks per SM.
-    if (t <= 8) {
+    // T <= 8 (decode and MTP verify): two groups in flight per warp (KB 2) instead of four, more resident warps.
+    // Measured on the V100 rank shapes (bench_w8pp.cu, T=5): gate_up 15360x5120 126.0 -> 108.3 us (s4 kb2 m6),
+    // down 5120x7680 63.6 -> 56.8 us (s8 kb2 m3).
+    // NINFER_SM70_W8_KB2=0 goes back to the previous KB 4 configurations (A/B).
+    static const bool kb2 = [] {
+        const char* v = std::getenv("NINFER_SM70_W8_KB2");
+        return v == nullptr || v[0] != '0';
+    }();
+    if (t <= 8 && kb2) {
+        if (n < 8192) { w8_volta_prepacked_kernel<8, 2, 3, 1><<<grid, 256, 0, stream>>>(codes, scales, xs, y, n, k, t, out_ld); }
+        else { w8_volta_prepacked_kernel<4, 2, 6, 1><<<grid, 128, 0, stream>>>(codes, scales, xs, y, n, k, t, out_ld); }
+    } else if (t <= 8) {
         if (n < 8192) { w8_volta_prepacked_kernel<8, 4, 2, 1><<<grid, 256, 0, stream>>>(codes, scales, xs, y, n, k, t, out_ld); }
         else { w8_volta_prepacked_kernel<4, 4, 4, 1><<<grid, 128, 0, stream>>>(codes, scales, xs, y, n, k, t, out_ld); }
     } else if (t <= 16) {
