@@ -225,6 +225,48 @@ void init() {
 
 int rank() { return g_rank; }
 
+namespace {
+// NINFER_TP_NCCL_STATS=1: GPU time of every NCCL all-reduce (the large ones, i.e. prefill), measured with CUDA events on
+// the stream and collected lazily; every 512 calls the running totals go to stderr. Off by default.
+struct NcclTimer {
+    bool enabled = [] {
+        const char* env = std::getenv("NINFER_TP_NCCL_STATS");
+        return env != nullptr && env[0] == '1';
+    }();
+    std::vector<std::pair<cudaEvent_t, cudaEvent_t>> pending;
+    std::vector<std::pair<cudaEvent_t, cudaEvent_t>> spare;
+    double total_ms = 0.0;
+    std::uint64_t calls = 0, bytes = 0;
+
+    std::pair<cudaEvent_t, cudaEvent_t> take() {
+        if (spare.empty()) {
+            cudaEvent_t a, b;
+            CUDA_CHECK(cudaEventCreate(&a));
+            CUDA_CHECK(cudaEventCreate(&b));
+            return {a, b};
+        }
+        auto e = spare.back();
+        spare.pop_back();
+        return e;
+    }
+    void collect() {
+        std::size_t keep = 0;
+        for (auto& e : pending) {
+            if (cudaEventQuery(e.second) == cudaSuccess) {
+                float ms = 0.0f;
+                CUDA_CHECK(cudaEventElapsedTime(&ms, e.first, e.second));
+                total_ms += ms;
+                spare.push_back(e);
+            } else {
+                pending[keep++] = e;
+            }
+        }
+        pending.resize(keep);
+    }
+};
+NcclTimer g_nccl_timer;
+} // namespace
+
 void allreduce(Tensor& residual, cudaStream_t stream, int slot) {
     if (g_comm == nullptr) { throw std::logic_error("TP2 collectives used before init()"); }
     if (residual.dtype != DType::BF16 || !residual.is_contiguous()) {
@@ -236,9 +278,30 @@ void allreduce(Tensor& residual, cudaStream_t stream, int slot) {
                                  g_mailbox_steps, stream, g_mailbox_stats, slot);
         return;
     }
+    std::pair<cudaEvent_t, cudaEvent_t> timing{};
+    cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
+    if (g_nccl_timer.enabled) { CUDA_CHECK(cudaStreamIsCapturing(stream, &capture)); }
+    const bool timed = g_nccl_timer.enabled && capture == cudaStreamCaptureStatusNone;  // no event queries inside a graph capture
+    if (timed) {
+        timing = g_nccl_timer.take();
+        CUDA_CHECK(cudaEventRecord(timing.first, stream));
+    }
     nccl_check(ncclAllReduce(residual.data, residual.data, static_cast<std::size_t>(residual.numel()),
                              ncclBfloat16, ncclSum, g_comm, stream),
                "ncclAllReduce");
+    if (timed) {
+        CUDA_CHECK(cudaEventRecord(timing.second, stream));
+        g_nccl_timer.pending.push_back(timing);
+        g_nccl_timer.calls += 1;
+        g_nccl_timer.bytes += static_cast<std::uint64_t>(residual.numel()) * 2U;
+        g_nccl_timer.collect();
+        if (g_nccl_timer.calls % 512 == 0) {
+            std::fprintf(stderr, "[ninfer] TP2 NCCL rank %d: %llu all-reduce, %.2f GB, %.1f ms GPU (%.2f ms each)\n", g_rank,
+                         static_cast<unsigned long long>(g_nccl_timer.calls),
+                         static_cast<double>(g_nccl_timer.bytes) / 1e9, g_nccl_timer.total_ms,
+                         g_nccl_timer.total_ms / static_cast<double>(g_nccl_timer.calls - g_nccl_timer.pending.size()));
+        }
+    }
 }
 
 bool head_linear(const Tensor& hidden, const Weight& head, Tensor& out, cudaStream_t stream) {
