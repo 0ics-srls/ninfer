@@ -1,6 +1,7 @@
 #include "targets/qwen3_6_27b_tp2/impl/tp2_comm.h"
 #include "runtime/engine/tp_lockstep.h"
 #include "targets/qwen3_6_27b_tp2/impl/tp2_mailbox.h"
+#include "targets/qwen3_6_27b_tp2/impl/tp2_wire8.h"
 
 #include "core/device.h" // CUDA_CHECK
 #include "ninfer/ops/linear.h"
@@ -249,6 +250,28 @@ struct NcclTimer {
         spare.pop_back();
         return e;
     }
+    // Starts timing an NCCL exchange on `stream` (not inside a graph capture); returns false when off.
+    bool begin(cudaStream_t stream, std::pair<cudaEvent_t, cudaEvent_t>& timing) {
+        if (!enabled) { return false; }
+        cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamIsCapturing(stream, &capture));
+        if (capture != cudaStreamCaptureStatusNone) { return false; }  // no event queries inside a graph capture
+        timing = take();
+        CUDA_CHECK(cudaEventRecord(timing.first, stream));
+        return true;
+    }
+    void end(cudaStream_t stream, std::pair<cudaEvent_t, cudaEvent_t> timing, std::uint64_t wire_bytes, const char* kind) {
+        CUDA_CHECK(cudaEventRecord(timing.second, stream));
+        pending.push_back(timing);
+        calls += 1;
+        bytes += wire_bytes;
+        collect();
+        if (calls % 512 == 0) {
+            std::fprintf(stderr, "[ninfer] TP2 NCCL rank %d: %llu %s, %.2f GB, %.1f ms GPU (%.2f ms each)\n", g_rank,
+                         static_cast<unsigned long long>(calls), kind, static_cast<double>(bytes) / 1e9, total_ms,
+                         total_ms / static_cast<double>(calls - pending.size()));
+        }
+    }
     void collect() {
         std::size_t keep = 0;
         for (auto& e : pending) {
@@ -279,29 +302,59 @@ void allreduce(Tensor& residual, cudaStream_t stream, int slot) {
         return;
     }
     std::pair<cudaEvent_t, cudaEvent_t> timing{};
-    cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
-    if (g_nccl_timer.enabled) { CUDA_CHECK(cudaStreamIsCapturing(stream, &capture)); }
-    const bool timed = g_nccl_timer.enabled && capture == cudaStreamCaptureStatusNone;  // no event queries inside a graph capture
-    if (timed) {
-        timing = g_nccl_timer.take();
-        CUDA_CHECK(cudaEventRecord(timing.first, stream));
-    }
+    const bool timed = g_nccl_timer.begin(stream, timing);
     nccl_check(ncclAllReduce(residual.data, residual.data, static_cast<std::size_t>(residual.numel()),
                              ncclBfloat16, ncclSum, g_comm, stream),
                "ncclAllReduce");
-    if (timed) {
-        CUDA_CHECK(cudaEventRecord(timing.second, stream));
-        g_nccl_timer.pending.push_back(timing);
-        g_nccl_timer.calls += 1;
-        g_nccl_timer.bytes += static_cast<std::uint64_t>(residual.numel()) * 2U;
-        g_nccl_timer.collect();
-        if (g_nccl_timer.calls % 512 == 0) {
-            std::fprintf(stderr, "[ninfer] TP2 NCCL rank %d: %llu all-reduce, %.2f GB, %.1f ms GPU (%.2f ms each)\n", g_rank,
-                         static_cast<unsigned long long>(g_nccl_timer.calls),
-                         static_cast<double>(g_nccl_timer.bytes) / 1e9, g_nccl_timer.total_ms,
-                         g_nccl_timer.total_ms / static_cast<double>(g_nccl_timer.calls - g_nccl_timer.pending.size()));
-        }
+    if (timed) { g_nccl_timer.end(stream, timing, static_cast<std::uint64_t>(residual.numel()) * 2U, "all-reduce"); }
+}
+
+namespace {
+// 8-bit wire buffer: both ranks' slots back to back (all-gather in place). Grown outside graph capture only.
+void* g_wire8_buffer         = nullptr;
+std::size_t g_wire8_capacity = 0;
+
+int wire8_level() {
+    static const int level = [] {
+        const char* v = std::getenv("NINFER_TP_WIRE8");
+        return v == nullptr ? 0 : std::atoi(v);
+    }();
+    return level;
+}
+
+// residual <- residual + p0 + p1 over the 8-bit wire; false when this call must take the bf16 path.
+bool wire8_combine(const Tensor& partial, Tensor& residual, cudaStream_t stream, int slot) {
+    const std::int64_t n = residual.numel();
+    if (!wire8_wanted(n, slot) || partial.dtype != DType::BF16 || !partial.is_contiguous() || partial.numel() != n ||
+        residual.dtype != DType::BF16 || !residual.is_contiguous()) {
+        return false;
     }
+    const std::size_t bytes = wire8_slot_bytes(n);
+    if (2 * bytes > g_wire8_capacity) {
+        cudaStreamCaptureStatus capture = cudaStreamCaptureStatusNone;
+        CUDA_CHECK(cudaStreamIsCapturing(stream, &capture));
+        if (capture != cudaStreamCaptureStatusNone) { return false; }  // both ranks see the same shapes: same choice
+        CUDA_CHECK(cudaStreamSynchronize(stream));
+        if (g_wire8_buffer != nullptr) { CUDA_CHECK(cudaFree(g_wire8_buffer)); }
+        CUDA_CHECK(cudaMalloc(&g_wire8_buffer, 2 * bytes));
+        g_wire8_capacity = 2 * bytes;
+        std::fprintf(stderr, "[ninfer] TP2 rank %d: 8-bit wire buffer %.1f MB\n", g_rank, static_cast<double>(2 * bytes) / 1e6);
+    }
+    auto* base = static_cast<std::byte*>(g_wire8_buffer);
+    launch_wire8_quantize(static_cast<const __nv_bfloat16*>(partial.data), n, base + g_rank * bytes, stream);
+    std::pair<cudaEvent_t, cudaEvent_t> timing{};
+    const bool timed = g_nccl_timer.begin(stream, timing);
+    nccl_check(ncclAllGather(base + g_rank * bytes, base, bytes, ncclInt8, g_comm, stream), "ncclAllGather");
+    if (timed) { g_nccl_timer.end(stream, timing, bytes * 2U, "8-bit all-gather"); }
+    launch_wire8_combine(static_cast<__nv_bfloat16*>(residual.data), n, base, base + bytes, stream);
+    return true;
+}
+} // namespace
+
+bool wire8_wanted(std::int64_t elements, int slot) {
+    const int level = wire8_level();
+    return (level == 1 || (level == 2 && slot == 2)) && g_comm != nullptr && elements > kMailboxMaxElements &&
+           elements % kWire8Block == 0;
 }
 
 bool head_linear(const Tensor& hidden, const Weight& head, Tensor& out, cudaStream_t stream) {
@@ -343,6 +396,7 @@ bool head_linear(const Tensor& hidden, const Weight& head, Tensor& out, cudaStre
 }
 
 void combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream, int slot) {
+    if (wire8_combine(partial, residual, stream, slot)) { return; }
     if (g_rank == 0) {
         ops::residual_add(partial, residual, stream);
     } else {
