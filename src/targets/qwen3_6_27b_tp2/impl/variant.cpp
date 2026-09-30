@@ -14,6 +14,7 @@
 #include "ninfer/ops/silu_mul.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 
 #define NINFER_QWEN36_VARIANT    ::ninfer::targets::qwen3_6_27b_tp2::detail::Variant
@@ -184,15 +185,41 @@ void Variant::attention_projection(const Tensor& hidden,
                          stream);
 }
 
+namespace {
+// Row-parallel projection that overwrites `out`. At prefill widths ops::linear on the prepacked FP8 weights loops the
+// small-T QPN kernel over 32-token pieces (54,593 launches for a 27k-token read, 5.1 s on the 4090, 3.1 s on the V100);
+// linear_add takes the dequantize + GEMM route, so zero the destination and add into it.
+// NINFER_TP_PREFILL_ADD=0 restores ops::linear (A/B).
+void project_overwrite(const Tensor& x, const Weight& w, Tensor& out, WorkspaceArena& workspace, cudaStream_t stream) {
+    static const bool add_route = [] {
+        const char* v = std::getenv("NINFER_TP_PREFILL_ADD");
+        return v == nullptr || v[0] != '0';
+    }();
+    if (add_route && x.ne[1] > 32) {
+        CUDA_CHECK(cudaMemsetAsync(out.data, 0, out.bytes(), stream));
+        ops::linear_add(x, w, out, text_policy(w), workspace, stream);
+        return;
+    }
+    ops::linear(x, w, out, text_policy(w), workspace, stream);
+}
+} // namespace
+
 void Variant::attention_output_projection(const Tensor& attention, const Weight& weight,
                                           Tensor& residual, qwen3_6::TextPhase,
                                           WorkspaceArena& workspace, cudaStream_t stream) {
     // Row-parallel o_proj: rank 0 adds its partial into the residual, rank 1 overwrites the
     // residual with its partial; the all-reduce then yields residual + p0 + p1 on both ranks.
+    if (tp2::wire8_wanted(residual.numel(), 0)) {   // 8-bit wire: only the partials cross it
+        auto scope   = workspace.scope();
+        Tensor delta = workspace.alloc(DType::BF16, {residual.ne[0], residual.ne[1]});
+        project_overwrite(attention, weight, delta, workspace, stream);
+        tp2::combine_partial(delta, residual, stream, 0);
+        return;
+    }
     if (tp2::rank() == 0) {
         ops::linear_add(attention, weight, residual, text_policy(weight), workspace, stream);
     } else {
-        ops::linear(attention, weight, residual, text_policy(weight), workspace, stream);
+        project_overwrite(attention, weight, residual, workspace, stream);
     }
     tp2::allreduce(residual, stream, 0);
 }
@@ -295,10 +322,17 @@ void Variant::gdn_input_projection_record(const Tensor& hidden, const GdnProject
 void Variant::gdn_output_projection(const Tensor& hidden, const Weight& weight, Tensor& residual,
                                     qwen3_6::TextPhase, WorkspaceArena& workspace,
                                     cudaStream_t stream) {
+    if (tp2::wire8_wanted(residual.numel(), 1)) {   // 8-bit wire: only the partials cross it
+        auto scope   = workspace.scope();
+        Tensor delta = workspace.alloc(DType::BF16, {residual.ne[0], residual.ne[1]});
+        project_overwrite(hidden, weight, delta, workspace, stream);
+        tp2::combine_partial(delta, residual, stream, 1);
+        return;
+    }
     if (tp2::rank() == 0) {
         ops::linear_add(hidden, weight, residual, text_policy(weight), workspace, stream);
     } else {
-        ops::linear(hidden, weight, residual, text_policy(weight), workspace, stream);
+        project_overwrite(hidden, weight, residual, workspace, stream);
     }
     tp2::allreduce(residual, stream, 1);
 }

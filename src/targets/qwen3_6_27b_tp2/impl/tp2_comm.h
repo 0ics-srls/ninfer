@@ -25,8 +25,14 @@ void init();
 void allreduce(Tensor& residual, cudaStream_t stream, int slot = 3);
 
 // residual <- residual + sum over ranks of partial: rank 0 adds its partial, rank 1 replaces the
-// residual with its partial, then one all-reduce.
+// residual with its partial, then one all-reduce. With the 8-bit wire (wire8_wanted) the partials are
+// exchanged as int8 + per-64 scales instead and the residual itself never crosses the wire.
 void combine_partial(const Tensor& partial, Tensor& residual, cudaStream_t stream, int slot = 3);
+
+// NINFER_TP_WIRE8=1 and a reduction too large for the mailbox (prefill): the callers that fuse their
+// partial into the residual (linear_add) should produce a separate partial and call combine_partial.
+// NINFER_TP_WIRE8=2 keeps the wire to the MLP (slot 2) only, for A/B.
+[[nodiscard]] bool wire8_wanted(std::int64_t elements, int slot);
 
 // Vocabulary-sharded output head: this rank computes rows [rank*N/2, (rank+1)*N/2) of
 // hidden x head^T and both ranks end with the full [N, T] out (bit-identical on both ranks).
