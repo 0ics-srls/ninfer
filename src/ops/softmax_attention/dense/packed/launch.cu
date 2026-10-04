@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "ops/softmax_attention/dense/packed/launch.h"
 
 #include "ops/softmax_attention/dense/packed/kernel.cuh"
@@ -11,6 +12,17 @@
 
 namespace ninfer::ops::detail {
 namespace {
+
+#ifdef NINFER_VOLTA_BUILD
+// NINFER_VISION_ATTN=0 goes back to the scalar Volta kernel (A/B).
+bool volta_tiled_vision_attention() {
+    static const bool enabled = [] {
+        const char* v = std::getenv("NINFER_VISION_ATTN");
+        return !(v && v[0] == '0');
+    }();
+    return enabled;
+}
+#endif
 
 std::int64_t stride_elements(const Tensor& tensor, int dim) {
     return tensor.nb[dim] / static_cast<std::int64_t>(sizeof(__nv_bfloat16));
@@ -43,6 +55,21 @@ void packed_attention_launch(const Tensor& q, const Tensor& k, const Tensor& v,
     const dim3 grid(static_cast<unsigned>((q.ne[2] + kPackedAttentionVoltaQueriesPerBlock - 1) /
                                          kPackedAttentionVoltaQueriesPerBlock),
                     kPackedAttentionHeads, 1u);
+    if (volta_tiled_vision_attention()) {
+        const dim3 tiled_grid(static_cast<unsigned>((q.ne[2] + kPackedAttentionTiledQ - 1) /
+                                                    kPackedAttentionTiledQ),
+                              kPackedAttentionHeads, 1u);
+        packed_attention_volta_tiled_kernel<<<tiled_grid, kPackedAttentionTiledThreads, 0, stream>>>(
+            static_cast<const __nv_bfloat16*>(q.data), static_cast<const __nv_bfloat16*>(k.data),
+            static_cast<const __nv_bfloat16*>(v.data),
+            static_cast<const std::int32_t*>(cu_seqlens.data), cu_seqlens.ne[0] - 1, 0, q.ne[2],
+            static_cast<__nv_bfloat16*>(out.data), stride_elements(q, 0), stride_elements(q, 1),
+            stride_elements(q, 2), stride_elements(k, 0), stride_elements(k, 1),
+            stride_elements(k, 2), stride_elements(v, 0), stride_elements(v, 1),
+            stride_elements(v, 2));
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     packed_attention_volta_kernel<<<grid, kPackedAttentionVoltaThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(q.data), static_cast<const __nv_bfloat16*>(k.data),
         static_cast<const __nv_bfloat16*>(v.data),
@@ -98,6 +125,20 @@ void packed_attention_uniform_launch_with_tile(const Tensor& q, const Tensor& k,
     const dim3 grid(static_cast<unsigned>((q.ne[2] + kPackedAttentionVoltaQueriesPerBlock - 1) /
                                          kPackedAttentionVoltaQueriesPerBlock),
                     kPackedAttentionHeads, 1u);
+    if (volta_tiled_vision_attention()) {
+        const dim3 tiled_grid(static_cast<unsigned>((q.ne[2] + kPackedAttentionTiledQ - 1) /
+                                                    kPackedAttentionTiledQ),
+                              kPackedAttentionHeads, 1u);
+        packed_attention_volta_tiled_kernel<<<tiled_grid, kPackedAttentionTiledThreads, 0, stream>>>(
+            static_cast<const __nv_bfloat16*>(q.data), static_cast<const __nv_bfloat16*>(k.data),
+            static_cast<const __nv_bfloat16*>(v.data), nullptr, 0, segment_length, q.ne[2],
+            static_cast<__nv_bfloat16*>(out.data), stride_elements(q, 0), stride_elements(q, 1),
+            stride_elements(q, 2), stride_elements(k, 0), stride_elements(k, 1),
+            stride_elements(k, 2), stride_elements(v, 0), stride_elements(v, 1),
+            stride_elements(v, 2));
+        CUDA_CHECK(cudaGetLastError());
+        return;
+    }
     packed_attention_volta_kernel<<<grid, kPackedAttentionVoltaThreads, 0, stream>>>(
         static_cast<const __nv_bfloat16*>(q.data), static_cast<const __nv_bfloat16*>(k.data),
         static_cast<const __nv_bfloat16*>(v.data), nullptr, 0, segment_length, q.ne[2],
