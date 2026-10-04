@@ -286,9 +286,13 @@ ranks per model.
 
 ```bash
 ls -la ~/models/ninfer/tp2/
-# qwen3_8_27b_q8mlp.mlp7680.rank0.ninfer   ~15.1 GB
-# qwen3_8_27b_q8mlp.mlp7680.rank1.ninfer   ~14.6 GB
+# qwen3_8_27b_q8mlp.mlp7680.rank0.ninfer   15,103,820,544 bytes
+# qwen3_8_27b_q8mlp.mlp7680.rank1.ninfer   17,276,338,944 bytes
 ```
+
+We rebuilt the ranks from scratch with this script and compared them with the files we run in production: they are
+identical except for bytes 17–32 of the header, a random `artifact_id` (`uuid4`) written every time a file is created.
+To compare two builds yourself: `cmp -l a.ninfer b.ninfer | wc -l` must print 16 or less, all at offsets 17–32.
 
 ---
 
