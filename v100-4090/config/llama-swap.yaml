@@ -1,0 +1,29 @@
+# llama-swap example (https://github.com/mostlygeek/llama-swap): one OpenAI-compatible port (:8080) in front of every
+# model; the client picks a model by name and llama-swap starts it (and stops whatever held the GPUs before).
+# Replace /path/to/ninfer with the absolute path of this repository.
+#
+#   llama-swap -config llama-swap.yaml -listen :8080
+#
+# NInfer loads in ~75 s. start-tp.sh with FOREGROUND=1 waits for the GPUs to be released by the previous model and stays
+# attached to the container until llama-swap stops it with `docker stop`.
+
+healthCheckTimeout: 600
+
+models:
+  "qwen3.8-27b-ninfer":
+    name: "Qwen3.8-27B on NInfer (V100 + 4090 tensor parallel, 262k, images)"
+    proxy: "http://127.0.0.1:8097"
+    cmd: env FOREGROUND=1 MODEL=qwen3_8_27b_q8mlp.mlp7680 /path/to/ninfer/v100-4090/scripts/start-tp.sh 262144 8097
+    cmdStop: docker stop ninfer-v100-4090
+    useModelName: "ninfer-27b"
+    checkEndpoint: /health
+    ttl: 0
+
+  "qwen3.8-27b-ninfer-uncensored":
+    name: "Qwen3.8-27B Uncensored on NInfer (V100 + 4090 tensor parallel, 262k, images)"
+    proxy: "http://127.0.0.1:8097"
+    cmd: env FOREGROUND=1 MODEL=qwen3_8_27b_uncensored_q8mlp.mlp7680 /path/to/ninfer/v100-4090/scripts/start-tp.sh 262144 8097
+    cmdStop: docker stop ninfer-v100-4090
+    useModelName: "ninfer-27b"
+    checkEndpoint: /health
+    ttl: 0

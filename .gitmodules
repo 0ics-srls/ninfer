@@ -1,0 +1,3 @@
+[submodule "v100-4090/test-project"]
+	path = v100-4090/test-project
+	url = https://github.com/0ics-srls/ninfer-code-test.git

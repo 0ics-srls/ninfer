@@ -1,0 +1,618 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home Turbo Rig</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;700;800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root {
+  --bg: #f2f4f6;
+  --paper: #ffffff;
+  --ink: #141a21;
+  --ink-2: #3a4552;
+  --muted: #66727f;
+  --line: #d7dde3;
+  --soft: #e8ecf0;
+  --volta: #2c6a96;
+  --volta-soft: #dde9f2;
+  --ada: #b87418;
+  --ada-soft: #f6ead6;
+  --good: #2f7d4f;
+  --warn: #a8551b;
+  --code-bg: #eef1f4;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --body: "IBM Plex Sans", "Segoe UI", Roboto, Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0f141a;
+    --paper: #161d25;
+    --ink: #e6ebf0;
+    --ink-2: #c3ccd5;
+    --muted: #8d99a6;
+    --line: #2a3440;
+    --soft: #1d2630;
+    --volta: #6fa9d4;
+    --volta-soft: #1a2c3b;
+    --ada: #e2a24c;
+    --ada-soft: #33281a;
+    --good: #5fb884;
+    --warn: #e08a52;
+    --code-bg: #1b232c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f141a;
+  --paper: #161d25;
+  --ink: #e6ebf0;
+  --ink-2: #c3ccd5;
+  --muted: #8d99a6;
+  --line: #2a3440;
+  --soft: #1d2630;
+  --volta: #6fa9d4;
+  --volta-soft: #1a2c3b;
+  --ada: #e2a24c;
+  --ada-soft: #33281a;
+  --good: #5fb884;
+  --warn: #e08a52;
+  --code-bg: #1b232c;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.65 var(--body);
+  padding-inline: 16px;
+  padding-block: 0 64px;
+}
+.wrap {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 48px;
+}
+@media (max-width: 900px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  nav.toc { display: none; }
+}
+
+nav.toc {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  align-self: start;
+  padding-block: 40px 24px;
+  font-size: 13.5px;
+}
+nav.toc p {
+  font: 600 11px/1 var(--body);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+nav.toc a {
+  display: block;
+  padding: 5px 10px;
+  border-radius: 6px;
+  color: var(--ink-2);
+  text-decoration: none;
+}
+nav.toc a:hover, nav.toc a:focus-visible { background: var(--soft); color: var(--ink); outline: none; }
+nav.toc .n { font-family: var(--mono); color: var(--muted); margin-right: 6px; }
+
+main { min-width: 0; padding-block: 40px 0; }
+section { margin-top: 64px; scroll-margin-top: 24px; }
+.prose { max-width: 68ch; }
+
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(32px, 5.2vw, 52px); line-height: 1.05; font-weight: 800; letter-spacing: -.02em; }
+h2 { font-size: clamp(24px, 3.2vw, 32px); line-height: 1.15; font-weight: 700; letter-spacing: -.01em; }
+h3 { font-size: 19px; line-height: 1.3; font-weight: 700; margin-top: 32px; }
+p { margin: 14px 0 0; }
+.eyebrow {
+  font: 600 12px/1 var(--body);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 14px;
+  display: flex; gap: 10px; align-items: center;
+}
+.step-no {
+  font: 500 12px/1 var(--mono);
+  color: var(--paper);
+  background: var(--ink-2);
+  padding: 5px 8px;
+  border-radius: 4px;
+  letter-spacing: 0;
+}
+a { color: var(--volta); }
+strong { font-weight: 600; }
+.v { color: var(--volta); font-weight: 600; }
+.a { color: var(--ada); font-weight: 600; }
+.muted { color: var(--muted); }
+.small { font-size: 14px; }
+
+header.hero { padding-top: 8px; }
+.lede { font-size: 19px; line-height: 1.55; color: var(--ink-2); max-width: 62ch; margin-top: 18px; }
+.cards {
+  margin-top: 28px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.cards div { background: var(--paper); padding: 16px 16px 14px; }
+.cards b {
+  display: block;
+  font: 700 28px/1.1 var(--display);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.01em;
+}
+.cards span { display: block; font-size: 13px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+
+.pair { margin-top: 24px; display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+.gpu { border-radius: 10px; padding: 18px; border: 1px solid var(--line); background: var(--paper); }
+.gpu.volta { border-top: 4px solid var(--volta); }
+.gpu.ada { border-top: 4px solid var(--ada); }
+.gpu h3 { margin: 0; font-size: 18px; }
+.gpu dl { margin: 12px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; font-size: 14px; }
+.gpu dt { color: var(--muted); }
+.gpu dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+.table { margin-top: 20px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12.5px; letter-spacing: .03em; background: var(--soft); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+tr.us td { background: var(--volta-soft); font-weight: 600; }
+.tag {
+  display: inline-block;
+  font: 500 11px/1.4 var(--mono);
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--soft);
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.tag.q4 { background: var(--ada-soft); color: var(--ada); }
+.tag.q8 { background: var(--volta-soft); color: var(--volta); }
+
+figure { margin: 24px 0 0; padding: 18px; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; }
+.chart { overflow-x: auto; }
+figure svg { width: 100%; min-width: 560px; height: auto; display: block; }
+figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; }
+
+pre, code { font-family: var(--mono); font-size: 13.5px; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre {
+  margin: 16px 0 0;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  line-height: 1.55;
+}
+pre code { background: none; padding: 0; }
+pre .c { color: var(--muted); }
+
+.note {
+  margin-top: 18px;
+  padding: 12px 16px;
+  border-left: 3px solid var(--warn);
+  background: var(--paper);
+  border-radius: 0 8px 8px 0;
+  font-size: 15px;
+  max-width: 68ch;
+}
+.note.ok { border-left-color: var(--good); }
+.note b { color: var(--warn); }
+.note.ok b { color: var(--good); }
+
+ul.list, ol.list { margin: 14px 0 0; padding-left: 22px; max-width: 68ch; }
+ul.list li, ol.list li { margin-top: 8px; }
+
+.levers { margin-top: 20px; display: grid; gap: 10px; }
+.lever {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 16px;
+  padding: 14px 16px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.lever h4 { margin: 0; font: 600 15.5px/1.35 var(--body); }
+.lever p { margin: 4px 0 0; font-size: 14.5px; color: var(--ink-2); grid-column: 1 / -1; }
+.lever .gain { font: 600 14px/1.35 var(--mono); color: var(--good); text-align: right; white-space: nowrap; }
+@media (max-width: 520px) {
+  .lever { grid-template-columns: minmax(0, 1fr); }
+  .lever .gain { text-align: left; }
+}
+
+.split {
+  margin-top: 18px;
+  display: flex;
+  height: 34px;
+  border-radius: 6px;
+  overflow: hidden;
+  font: 500 12.5px/34px var(--mono);
+  color: #fff;
+}
+.split .sv { background: var(--volta); flex: 7680; padding-left: 10px; white-space: nowrap; overflow: hidden; }
+.split .sa { background: var(--ada); flex: 9728; padding-left: 10px; white-space: nowrap; overflow: hidden; }
+
+footer { margin-top: 72px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--muted); max-width: 68ch; }
+
+a:focus-visible { outline: 2px solid var(--volta); outline-offset: 2px; }
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+<nav class="toc" aria-label="Contents">
+  <p>Contents</p>
+  <ol>
+    <li><a href="#result"><span class="n">00</span>The result</a></li>
+    <li><a href="#compare"><span class="n">01</span>How it compares</a></li>
+    <li><a href="#hardware"><span class="n">02</span>Hardware</a></li>
+    <li><a href="#bios"><span class="n">03</span>BIOS</a></li>
+    <li><a href="#system"><span class="n">04</span>OS and drivers</a></li>
+    <li><a href="#llamacpp"><span class="n">05</span>First engine: llama.cpp</a></li>
+    <li><a href="#vllm"><span class="n">06</span>The vLLM detour</a></li>
+    <li><a href="#ninfer"><span class="n">07</span>NInfer: the turbo</a></li>
+    <li><a href="#model"><span class="n">08</span>The model</a></li>
+    <li><a href="#daily"><span class="n">09</span>Daily use</a></li>
+    <li><a href="#traps"><span class="n">10</span>Traps</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="hero" id="result">
+  <div class="eyebrow">Lab notebook · September–October 2026</div>
+  <h1>A 27B model at 8-bit, 100 tokens/s, 262k context. On two used GPUs.</h1>
+  <p class="lede">A 2017 <span class="v">Tesla V100 32 GB</span> and an <span class="a">RTX 4090</span> working on the same token together, in tensor parallel, running a dense Qwen3.8-27B at 8-bit. Every step is here, in the order we did it, with the measured numbers and the mistakes that cost us hours.</p>
+
+  <div class="cards" role="list">
+    <div role="listitem"><b>100–106</b><span>tokens/s generation on real work, up to 100k context</span></div>
+    <div role="listitem"><b>~91</b><span>tokens/s past 160k context</span></div>
+    <div role="listitem"><b>262k</b><span>full context, int8 KV cache</span></div>
+    <div role="listitem"><b>1,160</b><span>tokens/s cold prefill (55k)</span></div>
+    <div role="listitem"><b>9 s</b><span>per input photo (~3,000 vision tokens)</span></div>
+    <div role="listitem"><b>~47 GB</b><span>of VRAM in use, out of 56</span></div>
+  </div>
+  <p class="small muted">Generation measured on real agentic coding sessions (OpenCode) with MTP speculative decoding. On pure code generation, where more drafts get accepted, it reaches 138–305 tokens/s depending on the benchmark.</p>
+</header>
+
+<section id="compare">
+  <div class="eyebrow">01 · How it compares</div>
+  <h2>Where it sits against what's been published</h2>
+  <div class="prose">
+    <p>We looked for home setups running the same kind of model (dense, 27–32B) at long context. Most public benchmarks measure with an empty context; results past 100k are rare, and <strong>8-bit</strong> results past 100k are rarer still. External numbers are as reported by their authors, linked to the source.</p>
+  </div>
+
+  <figure>
+    <div class="chart">
+    <svg viewBox="0 0 720 366" role="img" aria-labelledby="g-title">
+      <title id="g-title">Generation tokens per second at long context</title>
+      <g font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--muted)">
+        <line x1="250" y1="16" x2="250" y2="334" stroke="var(--line)"/>
+        <line x1="363" y1="16" x2="363" y2="334" stroke="var(--line)" stroke-dasharray="3 4"/>
+        <line x1="477" y1="16" x2="477" y2="334" stroke="var(--line)" stroke-dasharray="3 4"/>
+        <line x1="590" y1="16" x2="590" y2="334" stroke="var(--line)" stroke-dasharray="3 4"/>
+        <line x1="703" y1="16" x2="703" y2="334" stroke="var(--line)" stroke-dasharray="3 4"/>
+        <text x="250" y="352" text-anchor="middle">0</text>
+        <text x="363" y="352" text-anchor="middle">30</text>
+        <text x="477" y="352" text-anchor="middle">60</text>
+        <text x="590" y="352" text-anchor="middle">90</text>
+        <text x="703" y="352" text-anchor="middle">120 t/s</text>
+      </g>
+      <g font-family="IBM Plex Sans, sans-serif" font-size="12.5" fill="var(--ink)">
+        <text x="240" y="38" text-anchor="end" font-weight="600">V100 + 4090 (us) · 8-bit · 160k+</text>
+        <rect x="250" y="26" width="344" height="18" rx="3" fill="var(--volta)"/>
+        <text x="600" y="39" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">91</text>
+
+        <text x="240" y="80" text-anchor="end">RTX 5090 · 4-bit · 256k</text>
+        <rect x="250" y="68" width="434" height="18" rx="3" fill="var(--ada)" opacity=".55"/>
+        <text x="690" y="81" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">115</text>
+
+        <text x="240" y="122" text-anchor="end">2× RTX 3090 · INT8 · 128k</text>
+        <rect x="250" y="110" width="253" height="18" rx="3" fill="var(--muted)"/>
+        <text x="509" y="123" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">65–70</text>
+
+        <text x="240" y="164" text-anchor="end">2× RTX 3090 · 4-bit · 100k</text>
+        <rect x="250" y="152" width="136" height="18" rx="3" fill="var(--ada)" opacity=".55"/>
+        <text x="392" y="165" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">36</text>
+
+        <text x="240" y="206" text-anchor="end">RTX PRO 6000 · FP8 · 256k</text>
+        <rect x="250" y="194" width="115" height="18" rx="3" fill="var(--muted)"/>
+        <text x="371" y="207" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">30.4</text>
+
+        <text x="240" y="248" text-anchor="end">Mac Studio M3 Ultra · 8-bit · 128k</text>
+        <rect x="250" y="236" width="27" height="18" rx="3" fill="var(--muted)"/>
+        <text x="283" y="249" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">7.1</text>
+
+        <text x="240" y="290" text-anchor="end">DGX Spark · 4-bit · 256k</text>
+        <rect x="250" y="278" width="22" height="18" rx="3" fill="var(--ada)" opacity=".55"/>
+        <text x="278" y="291" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--ink)">5.9</text>
+
+        <text x="240" y="328" text-anchor="end" fill="var(--muted)">us, up to 100k · 8-bit</text>
+        <rect x="250" y="317" width="400" height="12" rx="3" fill="var(--volta)" opacity=".45"/>
+        <text x="656" y="328" font-family="IBM Plex Mono, monospace" font-size="12" fill="var(--muted)">106</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>Generation speed with a long context actually filled. Blue: ours, 8-bit. Light amber: 4-bit. Grey: others at 8-bit (INT8 / FP8). The 5090 is faster but only at 4-bit, which for us isn't good enough for code (see §08). Sources in the table below.</figcaption>
+  </figure>
+
+  <div class="table">
+    <table>
+      <thead><tr><th>Hardware</th><th>VRAM</th><th>Approx. price</th><th>Quant</th><th class="num">t/s at long context</th><th>Source</th></tr></thead>
+      <tbody>
+        <tr class="us"><td>V100 32 GB + RTX 4090, tensor parallel</td><td>56 GB (47 used)</td><td>~$3,500 (used)</td><td><span class="tag q8">8-bit</span></td><td class="num">100–106 up to 100k · ~91 past 160k</td><td>our measurements</td></tr>
+        <tr><td>2× RTX 3090, vLLM TP2</td><td>48 GB</td><td>~$2,400 (used)</td><td><span class="tag q8">INT8 W8A16</span></td><td class="num">64.5–69.8 at 128k filled</td><td><a href="https://huggingface.co/lued/Qwen3.8-27B-INT8-W8A16-MTP" target="_blank" rel="noopener">lued / HF</a></td></tr>
+        <tr><td>2× RTX 3090 NVLink, vLLM + DFlash2</td><td>48 GB</td><td>~$2,400 (used)</td><td><span class="tag q4">INT4</span></td><td class="num">199 at 90k filled · OOM past ~185k</td><td><a href="https://github.com/noonghunna/club-3090/issues/1339" target="_blank" rel="noopener">club-3090 #1339</a></td></tr>
+        <tr><td>2× RTX 3090, vLLM TP2</td><td>48 GB</td><td>~$2,400 (used)</td><td><span class="tag q4">INT4</span></td><td class="num">36 at 100k · 28 at 200k</td><td><a href="https://github.com/noonghunna/qwen36-dual-3090" target="_blank" rel="noopener">noonghunna</a></td></tr>
+        <tr><td>RTX 4090D 48 GB (modded), SGLang</td><td>48 GB</td><td>—</td><td><span class="tag q8">FP8</span></td><td class="num">66 (prompt length not stated)</td><td><a href="https://huggingface.co/Qwen/Qwen3.6-27B-FP8/discussions/11" target="_blank" rel="noopener">HF discussion</a></td></tr>
+        <tr><td>RTX 5090</td><td>32 GB</td><td>$3,800–4,900</td><td><span class="tag q4">4-bit</span></td><td class="num">115 at 256k</td><td><a href="https://kgptalkie.com/tutorials/generative-ai/qwen-3-8-27b-llama-cpp-speed-settings" target="_blank" rel="noopener">kgptalkie</a></td></tr>
+        <tr><td>RTX PRO 6000, vLLM</td><td>96 GB</td><td>$16,000</td><td><span class="tag q8">FP8</span></td><td class="num">41 at 64k · 30.4 at 256k</td><td><a href="https://www.millstoneai.com/inference-benchmark/qwen3-6-27b-fp8-1x-rtx-pro-6000-blackwell" target="_blank" rel="noopener">millstoneai</a></td></tr>
+        <tr><td>Mac Studio M3 Ultra, MLX (32B)</td><td>unified</td><td>from $4,000</td><td><span class="tag q8">8-bit</span></td><td class="num">7.1 at 128k</td><td><a href="https://github.com/ml-explore/mlx/discussions/3209" target="_blank" rel="noopener">mlx #3209</a></td></tr>
+        <tr><td>DGX Spark</td><td>128 GB unified</td><td>~$4,700</td><td><span class="tag q4">4-bit</span></td><td class="num">5.9 at 256k</td><td><a href="https://www.hardware-corner.net/qwen3-8-27b-hardware-tests/" target="_blank" rel="noopener">hardware-corner</a></td></tr>
+        <tr><td>Strix Halo, llama.cpp + MTP</td><td>128 GB unified</td><td>$3,300–4,300</td><td><span class="tag q8">Q8_0</span></td><td class="num">6–19 already at short context</td><td><a href="https://sleepingrobots.com/dreams/mtp-qwen36-strix-halo/" target="_blank" rel="noopener">sleepingrobots</a></td></tr>
+        <tr><td>1× RTX 4090 alone</td><td>24 GB</td><td>~$2,800</td><td>—</td><td class="num">8-bit model doesn't fit</td><td><a href="https://www.hardware-corner.net/qwen3-8-27b-hardware-tests/" target="_blank" rel="noopener">hardware-corner</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note"><b>Honest caveats.</b> External results mix Qwen3.6 and 3.8, different prompts and different MTP acceptance rates; code is much faster than prose. In the ~48 GB class, the closest 8-bit result we found is two RTX 3090s at INT8: 65–70 t/s with 128k filled. We found no one else running tensor parallel across a V100 and an Ada card: people mixing GPU generations split the model by layers, and the one attempt at mixed tensor parallel on vLLM we found produced broken output.</div>
+</section>
+
+<section id="hardware">
+  <div class="eyebrow"><span class="step-no">02</span> Hardware</div>
+  <h2>Two cards that look like they don't belong together</h2>
+  <div class="prose">
+    <p>The core idea: the <span class="v">V100</span> has lots of memory and bandwidth, but little compute and no modern formats (no BF16, no FP8, no INT8 on its tensor cores, FP16 only). The <span class="a">4090</span> has more than twice the compute and real FP8, but only 24 GB. Together they give 56 GB with almost equal bandwidth. The trick is to treat them <strong>asymmetrically</strong>: every change that treated them differently paid off.</p>
+  </div>
+  <div class="pair">
+    <div class="gpu volta">
+      <h3 class="v">Tesla V100 PCIe 32 GB</h3>
+      <dl>
+        <dt>Architecture</dt><dd>Volta, sm_70 (2017)</dd>
+        <dt>Memory</dt><dd>32 GB HBM2, ~900 GB/s</dd>
+        <dt>Tensor cores</dt><dd>FP16 only</dd>
+        <dt>Measured FP16 matmul</dt><dd>66.9 TFLOPS</dd>
+        <dt>Power</dt><dd>capped at 150 W</dd>
+        <dt>Used price</dt><dd>from ~$670 (median ~$950)</dd>
+      </dl>
+    </div>
+    <div class="gpu ada">
+      <h3 class="a">GeForce RTX 4090 24 GB</h3>
+      <dl>
+        <dt>Architecture</dt><dd>Ada, sm_89 (2022)</dd>
+        <dt>Memory</dt><dd>24 GB GDDR6X, ~1,008 GB/s</dd>
+        <dt>Tensor cores</dt><dd>FP16, BF16, FP8, INT8</dd>
+        <dt>Measured FP16 matmul</dt><dd>149.0 TFLOPS</dd>
+        <dt>Power</dt><dd>capped at 400 W</dd>
+        <dt>Used price</dt><dd>~$2,800</dd>
+      </dl>
+    </div>
+  </div>
+
+  <h3>The rest of the machine</h3>
+  <div class="table">
+    <table>
+      <thead><tr><th>Part</th><th>What we use</th><th>Why it matters</th></tr></thead>
+      <tbody>
+        <tr><td>Motherboard</td><td>ASRock X570 Taichi (BIOS P4.70)</td><td>It provides a 64-bit memory window large enough for the V100's 32 GB BAR1. Not every board does (see below).</td></tr>
+        <tr><td>CPU</td><td>Ryzen 5 5600X</td><td>Enough: all the work is on the GPUs.</td></tr>
+        <tr><td>RAM</td><td>64 GB DDR4-3200</td><td>32 GB is enough for the 27B; more only helps MoE models with experts offloaded to RAM.</td></tr>
+        <tr><td>Slots</td><td>PCIe 3.0 x8 per card, no P2P</td><td>The cards talk through host RAM. That is the prefill bottleneck, and the reason for the "8-bit wire" in §07.</td></tr>
+        <tr><td>PSU</td><td>1,000 W</td><td>150 W + 400 W of GPU plus the rest, with headroom.</td></tr>
+        <tr><td>V100 cooling</td><td>shroud with its own fan, driven by GPU temperature</td><td>The V100 is passively cooled: without forced airflow it reaches 83 °C and throttles. With the right fan it stays around 64–69 °C.</td></tr>
+        <tr><td>Disk</td><td>~1 TB for the OS and models</td><td>Each 8-bit model is ~29 GB, plus intermediate versions.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note"><b>The motherboard is the first trap.</b> On our main PC (Gigabyte X670E AORUS MASTER) the V100 never worked: its BAR1 is fixed at 32 GB and the firmware offers at most 0.25 GB of 64-bit prefetchable window. We tried everything: CPU slot, 4090 removed, CSM off, Above 4G and ReBAR on, latest BIOS. On the X570 Taichi the full 32 GB BAR1 is assigned (verified in <code>dmesg</code>). Before buying a V100, make sure your motherboard can map it.</div>
+</section>
+
+<section id="bios">
+  <div class="eyebrow"><span class="step-no">03</span> BIOS</div>
+  <h2>Three settings, before you install the V100</h2>
+  <ol class="list">
+    <li><strong>Above 4G Decoding: on.</strong> Without it the V100 stops the machine from booting, without even an error code.</li>
+    <li><strong>Re-Size BAR: on.</strong> The 4090 has a resizable BAR (256 MB to 24 GB) and fits into whatever space is left.</li>
+    <li><strong>CSM: off</strong> (UEFI boot only).</li>
+  </ol>
+  <div class="note"><b>Watch out for clear CMOS.</b> It resets all three settings to factory defaults, and after a reset the V100 won't let the machine boot. Set them again <em>before</em> putting the card back in.</div>
+</section>
+
+<section id="system">
+  <div class="eyebrow"><span class="step-no">04</span> OS and drivers</div>
+  <h2>Ubuntu, the right driver and the right CUDA</h2>
+  <div class="prose">
+    <p>Ubuntu Server 24.04. Then two constraints you don't get to choose, because the V100 is at the end of NVIDIA's support.</p>
+  </div>
+  <ul class="list">
+    <li><strong>Driver branch 580, not the latest.</strong> 580 is the last branch that supports Volta (LTS until 2028); from 590 on the V100 disappears. It covers the 4090 just fine. Pin it so an upgrade can't replace it.</li>
+    <li><strong>CUDA 12, not 13.</strong> CUDA 13 dropped sm_70. To build for both cards use architectures <code>70;89</code>.</li>
+  </ul>
+<pre><code><span class="c"># driver, pinned</span>
+sudo apt install nvidia-driver-580-server
+sudo apt-mark hold nvidia-driver-580-server
+
+<span class="c"># check: both cards visible, and the V100's full BAR1</span>
+nvidia-smi
+sudo dmesg | grep -i "BAR 1"</code></pre>
+
+  <h3>Two services you actually need</h3>
+  <ul class="list">
+    <li><strong>Power limit by name, never by index.</strong> V100 at 150 W, 4090 at 400 W. <code>nvidia-smi</code> indices change when you move cards around, so the service looks them up by name.</li>
+    <li><strong>Fans driven by GPU temperature</strong>, writing only to the PWM channels of the case and the V100 shroud (never the CPU fans).</li>
+  </ul>
+<pre><code><span class="c"># power limit, finding the card by name</span>
+for id in $(nvidia-smi --query-gpu=index,name --format=csv,noheader | awk -F', ' '/V100/{print $1}'); do
+  sudo nvidia-smi -i "$id" -pl 150
+done</code></pre>
+  <div class="note ok"><b>What the 150 W cap costs.</b> Raising the V100 from 150 to 250 W gives +4% prefill and +0.5% generation, for 6 °C more. Not worth it.</div>
+</section>
+
+<section id="llamacpp">
+  <div class="eyebrow"><span class="step-no">05</span> First engine: llama.cpp</div>
+  <h2>Works out of the box, but needs tuning: four findings</h2>
+  <div class="prose">
+    <p>llama.cpp with GGUF models, built for <code>70;89</code>, is the easiest path and is still our fallback. Before we got to the final engine it taught us four things, all measured.</p>
+  </div>
+
+  <h3>1. GPU indices are swapped between tools</h3>
+  <p class="prose"><code>nvidia-smi</code> orders by PCI bus (0 = V100); CUDA orders by speed (<strong>CUDA0 = 4090</strong>, CUDA1 = V100). So <code>--tensor-split 51,49</code> means 51% to the 4090.</p>
+
+  <h3>2. Split by compute, not by memory</h3>
+  <p class="prose">The default split follows VRAM (43/57), which loads the slower card more. With a layer split the cards work one after the other, so the 4090 should get more of the work.</p>
+  <div class="table">
+    <table>
+      <thead><tr><th></th><th class="num">default 43/57</th><th class="num">51/49</th><th class="num">gain</th></tr></thead>
+      <tbody>
+        <tr><td>prefill at 30k</td><td class="num">949 t/s</td><td class="num">1,090 t/s</td><td class="num">+14.9%</td></tr>
+        <tr><td>prefill at 50k</td><td class="num">850 t/s</td><td class="num">985 t/s</td><td class="num">+15.9%</td></tr>
+        <tr><td>generation</td><td class="num">53.2 t/s</td><td class="num">55.5 t/s</td><td class="num">+4.3%</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted">Going past 51 doesn't pay: at 52–53 generation drops 5%, and at 54/46 the 4090 is left with under 0.5 GB free and crashes mid-inference. Never go below 1 GiB free on the 4090.</p>
+
+  <h3>3. On the V100, keep the KV cache in f16</h3>
+  <p class="prose">Compressing the cache slows things down: the V100 has to unpack every narrow format by hand, and that kernel costs more than the bandwidth it saves (Qwen3-Coder-30B, 16k context):</p>
+  <div class="table">
+    <table>
+      <thead><tr><th>KV cache</th><th class="num">generation</th><th class="num"></th></tr></thead>
+      <tbody>
+        <tr><td>f16</td><td class="num">102.6 t/s</td><td class="num">baseline</td></tr>
+        <tr><td>q8_0</td><td class="num">70.5 t/s</td><td class="num">−31%</td></tr>
+        <tr><td>q4_0</td><td class="num">56.5 t/s</td><td class="num">−45%</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>4. MTP speculative decoding beats everything else</h3>
+  <p class="prose">Qwen3.8 models ship an MTP head that drafts the next tokens. Turned on: 24.9 → <strong>54.8 t/s</strong> (+120%, at temperature 0). Then llama.cpp's tensor parallel (<code>-sm tensor --tensor-split 50,50</code>), where both cards compute every matrix together: another +19–32% in generation (57 / 51 t/s at 30k / 100k).</p>
+  <div class="note"><b>Where llama.cpp stops.</b> Past 200k of context it drops to 23–46 t/s: generic kernels, a fixed 50/50 split, no attention kernel tuned for the V100. Going further meant writing code inside an engine.</div>
+</section>
+
+<section id="vllm">
+  <div class="eyebrow"><span class="step-no">06</span> The vLLM detour</div>
+  <h2>Useful for learning, not for staying</h2>
+  <div class="prose">
+    <p>Upstream vLLM and SGLang don't run on the V100: their kernels (FlashAttention 2, Gated DeltaNet) require Ampere or newer. There is a fork with kernels rewritten for Volta, 1Cat-vLLM. To run it <em>together</em> with the 4090 we had to fix the FP4 weights path: the scales were in the Volta layout and the 4090 produced garbage. After the fix the 27B FP8 reached 262k context (25.8 t/s at 259k), but on real work it stayed at <strong>17–19 t/s</strong>.</p>
+    <p>It did teach a rule that holds for everything after: with a mixed KV cache (f16 on the V100, fp8 on the 4090) per-turn prefill went up 2.5×. <strong>Different formats, caches and roles per card</strong>, never one ratio for both.</p>
+  </div>
+</section>
+
+<section id="ninfer">
+  <div class="eyebrow"><span class="step-no">07</span> NInfer: the turbo</div>
+  <h2>An engine written for these two cards</h2>
+  <div class="prose">
+    <p>NInfer is a C++/CUDA inference engine for Qwen3.x, built for the RTX 5090 and already ported to the V100 by others (on identical V100s, at 4-bit). Our fork runs it in <strong>tensor parallel across V100 + 4090</strong>, with each card on its own compute path: rank 0 is the V100 (sm_70), rank 1 the 4090. Every change below was A/B-tested before it stayed.</p>
+  </div>
+
+  <h3>The work is split by compute</h3>
+  <p class="prose">The MLP (the heaviest part of each layer) isn't split in half: the 4090 takes more columns, so it doesn't wait for the V100.</p>
+  <div class="split" aria-label="MLP column split: 7,680 to the V100, 9,728 to the 4090">
+    <div class="sv">V100 · 7,680 columns</div>
+    <div class="sa">4090 · 9,728 columns</div>
+  </div>
+
+  <div class="levers">
+    <div class="lever"><h4>MLP weights at 8-bit, bit-identical to the GGUF Q8_0</h4><span class="gain">quality</span><p>The MLP is copied bit for bit from Q8_0 (one scale per 32 values); attention and Gated DeltaNet stay in the official FP8. On the V100 a rewritten 8-bit GEMV reaches 660–675 GB/s, 77% of the ceiling.</p></div>
+    <div class="lever"><h4>int8 KV cache with our own V100 attention kernel</h4><span class="gain">92 t/s at 261k</span><p>Two blocks per SM, 16-byte loads, 470–480 GB/s. At long context it reads half the bytes of an f16 cache, which is why the curve drops so little.</p></div>
+    <div class="lever"><h4>MTP with 4 drafts and a light draft head</h4><span class="gain">code 87 → 305 t/s</span><p>The light head doesn't re-read the full vocabulary (248k × 5120) for every draft. This is the biggest lever: each step verifies 2–3 tokens.</p></div>
+    <div class="lever"><h4>Prefill on tensor cores</h4><span class="gain">1,030 t/s at 65k</span><p>CUTLASS for the 8-bit MLP and flash attention for Volta. llama.cpp on the same hardware: 560–730 t/s.</p></div>
+    <div class="lever"><h4>First token: short reads on the fast kernel</h4><span class="gain">2–6 s → 0.3 s</span><p>Requests with 17 to 63 new tokens were landing on a scalar kernel. With the threshold lowered to 17, the median first token is 0.37 s at 120–200k of context.</p></div>
+    <div class="lever"><h4>Preserved reasoning and a 16k cap</h4><span class="gain">plan: 2 h 28 → 1 h 33</span><p>Previous turns' reasoning stays in context (no re-reads), and a 16k-token cap prevents wasted 32k turns.</p></div>
+    <div class="lever"><h4>8-bit wire between the cards, during prefill</h4><span class="gain">prefill +10%</span><p>The cards exchange only partial sums, in int8 with one scale per 64 values; the final sum is bit-identical on both ranks. Cold prefill at 55k: 1,056 → 1,163 t/s. 83 replayed turns with no collapse.</p></div>
+    <div class="lever"><h4>Smaller blocks in the V100 GEMV</h4><span class="gain">generation +4.6%</span><p>On code: 132.0 → 138.1 t/s in an alternating A/B, identical output.</p></div>
+    <div class="lever"><h4>Photos: request limit and vision-encoder attention</h4><span class="gain">photo 28.5 → 9 s</span><p>The 32k vision-token limit per request (about 10 photos) became 256k. The vision encoder's attention ran a scalar kernel on both cards: rewritten first as a tiled kernel (14.3 s), then on FP16 tensor cores (9.0 s), mean relative error 1.8e-4.</p></div>
+  </div>
+
+  <h3>The generation curve</h3>
+  <div class="table">
+    <table>
+      <thead><tr><th>context</th><th class="num">generation on real work</th></tr></thead>
+      <tbody>
+        <tr><td>up to 100k</td><td class="num">100–106 t/s</td></tr>
+        <tr><td>100–160k</td><td class="num">~100 t/s</td></tr>
+        <tr><td>past 160k</td><td class="num">~91 t/s</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="small muted">Measured on real OpenCode sessions (a complete development plan, 423 requests), not on a synthetic benchmark.</p>
+  <div class="note"><b>What didn't pay off</b> (measured and dropped): different NCCL protocols and channel counts, the V100 at 250 W for generation, an f16/bf16 cache on the V100 instead of int8, double prefetch in the attention kernel, 2 or 5–6 MTP drafts instead of 4.</div>
+</section>
+
+<section id="model">
+  <div class="eyebrow"><span class="step-no">08</span> The model</div>
+  <h2>Why a dense 27B, and why 8-bit</h2>
+  <ul class="list">
+    <li><strong>Qwen3.8-27B has hybrid attention:</strong> only 16 of its 64 layers use full attention, the rest use Gated DeltaNet. The cache costs 64 KiB per token: 16 GiB at 262k. An MoE such as Qwen3-Coder-30B needs 96 KiB per token (25.7 GiB at 262k) and doesn't fit.</li>
+    <li><strong>8-bit, not less.</strong> Below 8 bits, in any uniform quantization, the model gets exact strings wrong: for code it isn't reliable. That's why we don't use the 4-bit ports, even though they're faster.</li>
+    <li><strong>Quality on real work:</strong> a complete development plan (6 TDD blocks, driven by an agent) finished in 1 h 20–1 h 33 of work, end-to-end tests 25/25 re-run twice, code review 20–21 out of 25 from three independent reviewers. The same model at FP8 on vLLM: 19.</li>
+  </ul>
+</section>
+
+<section id="daily">
+  <div class="eyebrow"><span class="step-no">09</span> Daily use</div>
+  <h2>One address, models swap by themselves</h2>
+  <ul class="list">
+    <li><strong>llama-swap</strong> in front of everything, on a single port: pick the model in the client and the right engine starts by itself (NInfer loads in ~75 s).</li>
+    <li><strong>OpenCode</strong> as the coding agent, with an OpenAI-compatible provider pointing at llama-swap.</li>
+    <li><strong>Reasoning level from the UI:</strong> model variants <code>xhigh</code>, <code>medium</code>, <code>low</code>, <code>none</code>, passed to the engine as <code>reasoning_effort</code>; in OpenCode you switch them with <code>ctrl+t</code>.</li>
+    <li><strong>Context compaction on</strong>, with the threshold close to the full context: turning it off leads to errors once a session goes past 262k.</li>
+  </ul>
+<pre><code><span class="c"># opencode.json: reasoning variants on a local model</span>
+"qwen3.8-27b-ninfer": {
+  "limit": { "context": 262144, "output": 65536 },
+  "variants": {
+    "xhigh":  { "reasoningEffort": "xhigh" },
+    "medium": { "reasoningEffort": "medium" },
+    "low":    { "reasoningEffort": "low" },
+    "none":   { "reasoningEffort": "none" }
+  }
+}</code></pre>
+  <div class="note"><b>Reasoning length varies a lot between sessions.</b> Two runs of the same plan on the same engine produced 165k and 458k reasoning tokens, with the same final quality. Replaying the same requests on two engine builds gives the same reasoning (57.0k vs 57.5k): it isn't the engine, it's the path the conversation takes.</div>
+</section>
+
+<section id="traps">
+  <div class="eyebrow"><span class="step-no">10</span> Traps</div>
+  <h2>Things that cost us hours</h2>
+  <ul class="list">
+    <li><strong>BF16 on the V100.</strong> Volta has no BF16: PyTorch silently falls back to an emulated path, about 7× slower, with no error at all. Always force FP16.</li>
+    <li><strong>FP8, NVFP4 and AWQ on the V100 buy memory, not speed.</strong> They're unpacked to FP16 for every multiplication. The speed gain of an FP8 checkpoint comes only from the 4090's rank.</li>
+    <li><strong>Mixed cache types</strong> (e.g. K in f16 and V in q4) in llama.cpp have no CUDA kernels for sm_70, and the work silently moves to the CPU.</li>
+    <li><strong><code>/health</code> lies.</strong> It reports "ready" before the model really is, and the first measurement after startup should be discarded.</li>
+    <li><strong>The date in the system prompt.</strong> OpenCode writes it into the prompt: at midnight it changes and the prefix cache is invalidated, so the whole context gets re-read (147k tokens in 3 min 20 s).</li>
+    <li><strong>llama.cpp tensor parallel wants equal VRAM</strong> (50,50) and can't rebalance the split: if it doesn't fit, it dies at load time.</li>
+    <li><strong>A clear CMOS turns off Above 4G</strong>, and the V100 stops the machine from booting.</li>
+    <li><strong>Guesses are wrong, measurements aren't.</strong> More than once we "predicted" a 3% gain that turned out to be 25%, or the other way around. Every change gets an A/B before it stays.</li>
+  </ul>
+</section>
+
+<footer>
+  Measured on a single machine between September and October 2026, with Qwen3.8-27B (official and Uncensored). External numbers are as reported by the linked sources, not verified by us. Prices are indicative used-market prices as of October 2026.
+</footer>
+</main>
+</div>
+</body>
+</html>

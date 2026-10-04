@@ -1,0 +1,15 @@
+[Unit]
+Description=Case fans driven by the GPU temperatures (the V100 is passive)
+After=nvidia-persistenced.service
+
+[Service]
+Type=simple
+ExecStartPre=/sbin/modprobe nct6775
+ExecStart=/usr/local/bin/gpu-fan-control.sh
+Restart=always
+RestartSec=10
+TimeoutStopSec=8
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

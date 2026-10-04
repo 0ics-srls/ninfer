@@ -1,0 +1,12 @@
+[Unit]
+Description=GPU power limits (by name, not by index)
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/gpu-powerlimit.sh
+
+[Install]
+WantedBy=multi-user.target

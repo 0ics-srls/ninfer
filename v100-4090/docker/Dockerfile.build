@@ -1,0 +1,18 @@
+# Build environment for the V100 + 4090 tensor-parallel engine.
+#
+# CUDA 12.8 is the last toolkit line that still compiles sm_70 (Volta). NCCL comes from the 2.21.5 wheel because the
+# NCCL shipped with Ubuntu 24.04 (2.31) has no sm_70 kernels ("named symbol not found" at the first all-reduce).
+# The sources are NOT copied into the image: v100-4090/scripts/build.sh mounts the repository at /src.
+#
+#   docker build -f v100-4090/docker/Dockerfile.build -t ninfer-v100-4090/build:cuda12.8 v100-4090/docker
+ARG CUDA=12.8.1
+FROM nvidia/cuda:${CUDA}-devel-ubuntu24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      cmake ninja-build pkg-config git ca-certificates ccache unzip curl python3 python3-pip \
+      libavformat-dev libavcodec-dev libavutil-dev libswscale-dev libcurl4-openssl-dev \
+ && rm -rf /var/lib/apt/lists/*
+RUN python3 -m pip download --no-deps nvidia-nccl-cu12==2.21.5 -d /tmp/nccl \
+ && mkdir -p /opt/nccl-sm70 && cd /opt/nccl-sm70 && unzip -q /tmp/nccl/*.whl && rm -rf /tmp/nccl \
+ && ln -sf libnccl.so.2 /opt/nccl-sm70/nvidia/nccl/lib/libnccl.so
+ENV NINFER_NCCL_ROOT=/opt/nccl-sm70/nvidia/nccl CCACHE_DIR=/ccache
+WORKDIR /src
