@@ -353,9 +353,13 @@ Keep context compaction on (`"compaction": { "auto": true }`).
 [`v100-4090/test-project`](v100-4090/test-project) is the
 [`0ics-srls/ninfer-code-test`](https://github.com/0ics-srls/ninfer-code-test) submodule: a full-stack todo app
 (.NET 10 + Angular 21) and a 6-block TDD plan that OpenCode executes on its own through the CVM plan executor — migrations,
-API changes, regenerated client, UI, Playwright e2e. Its README explains how to run it and lists our four runs:
-6/6 blocks every time, e2e 25/25 twice, code review 20–21/25 from three independent reviewers, 1 h 23 – 2 h 28 of
-active work.
+API changes, regenerated client, UI, Playwright e2e. Our four runs: 6/6 blocks every time, e2e 25/25 twice, code review
+20–21/25 from three independent reviewers, 1 h 23 – 2 h 28 of active work.
+
+The plan is designed for the full agent toolchain, and our results were measured with all of it active: the j-\* agent
+workflow (in the repo), **CVM** (plan executor), **LSAI** (semantic navigation of the repo), **xmp4** (third-party
+library APIs), **chrome-devtools** and **PrimeNG** MCP servers. `v100-4090/test-project/setup/install-ubuntu.sh`
+installs and checks all of it; the test project's README explains what each piece does and why the plan needs it.
 
 ---
 
