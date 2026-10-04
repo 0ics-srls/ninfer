@@ -5,6 +5,7 @@
 #include "core/device.h"
 #ifdef NINFER_VOLTA_BUILD
 #include "ops/softmax_attention/dense/packed/volta.cuh"
+#include "ops/softmax_attention/dense/packed/volta_wmma.cuh"
 #endif
 
 #include <cstdint>
@@ -14,13 +15,32 @@ namespace ninfer::ops::detail {
 namespace {
 
 #ifdef NINFER_VOLTA_BUILD
-// NINFER_VISION_ATTN=0 goes back to the scalar Volta kernel (A/B).
-bool volta_tiled_vision_attention() {
-    static const bool enabled = [] {
+// NINFER_VISION_ATTN: 0 = scalar Volta kernel, 1 = tiled SIMT FP32, 2 (default) = FP16 tensor cores (WMMA).
+int volta_vision_attention_mode() {
+    static const int mode = [] {
         const char* v = std::getenv("NINFER_VISION_ATTN");
-        return !(v && v[0] == '0');
+        return v && v[0] >= '0' && v[0] <= '2' ? v[0] - '0' : 2;
     }();
-    return enabled;
+    return mode;
+}
+bool volta_tiled_vision_attention() { return volta_vision_attention_mode() == 1; }
+
+template <typename... Args>
+bool launch_volta_wmma(int tokens, cudaStream_t stream, Args... args) {
+    if (volta_vision_attention_mode() != 2) { return false; }
+    static const bool configured = [] {
+        CUDA_CHECK(cudaFuncSetAttribute(packed_attention_volta_wmma_kernel,
+                                        cudaFuncAttributeMaxDynamicSharedMemorySize,
+                                        static_cast<int>(sizeof(PackedAttentionWmmaSmem))));
+        return true;
+    }();
+    (void)configured;
+    const dim3 grid(static_cast<unsigned>((tokens + kPackedAttentionWmmaQ - 1) / kPackedAttentionWmmaQ),
+                    kPackedAttentionHeads, 1u);
+    packed_attention_volta_wmma_kernel<<<grid, kPackedAttentionWmmaThreads,
+                                         sizeof(PackedAttentionWmmaSmem), stream>>>(args...);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
 }
 #endif
 
@@ -55,6 +75,15 @@ void packed_attention_launch(const Tensor& q, const Tensor& k, const Tensor& v,
     const dim3 grid(static_cast<unsigned>((q.ne[2] + kPackedAttentionVoltaQueriesPerBlock - 1) /
                                          kPackedAttentionVoltaQueriesPerBlock),
                     kPackedAttentionHeads, 1u);
+    if (launch_volta_wmma(q.ne[2], stream, static_cast<const __nv_bfloat16*>(q.data),
+                          static_cast<const __nv_bfloat16*>(k.data), static_cast<const __nv_bfloat16*>(v.data),
+                          static_cast<const std::int32_t*>(cu_seqlens.data), cu_seqlens.ne[0] - 1, 0, q.ne[2],
+                          static_cast<__nv_bfloat16*>(out.data), stride_elements(q, 0), stride_elements(q, 1),
+                          stride_elements(q, 2), stride_elements(k, 0), stride_elements(k, 1),
+                          stride_elements(k, 2), stride_elements(v, 0), stride_elements(v, 1),
+                          stride_elements(v, 2))) {
+        return;
+    }
     if (volta_tiled_vision_attention()) {
         const dim3 tiled_grid(static_cast<unsigned>((q.ne[2] + kPackedAttentionTiledQ - 1) /
                                                     kPackedAttentionTiledQ),
@@ -125,6 +154,15 @@ void packed_attention_uniform_launch_with_tile(const Tensor& q, const Tensor& k,
     const dim3 grid(static_cast<unsigned>((q.ne[2] + kPackedAttentionVoltaQueriesPerBlock - 1) /
                                          kPackedAttentionVoltaQueriesPerBlock),
                     kPackedAttentionHeads, 1u);
+    if (launch_volta_wmma(q.ne[2], stream, static_cast<const __nv_bfloat16*>(q.data),
+                          static_cast<const __nv_bfloat16*>(k.data), static_cast<const __nv_bfloat16*>(v.data),
+                          static_cast<const std::int32_t*>(nullptr), 0, segment_length, q.ne[2],
+                          static_cast<__nv_bfloat16*>(out.data), stride_elements(q, 0), stride_elements(q, 1),
+                          stride_elements(q, 2), stride_elements(k, 0), stride_elements(k, 1),
+                          stride_elements(k, 2), stride_elements(v, 0), stride_elements(v, 1),
+                          stride_elements(v, 2))) {
+        return;
+    }
     if (volta_tiled_vision_attention()) {
         const dim3 tiled_grid(static_cast<unsigned>((q.ne[2] + kPackedAttentionTiledQ - 1) /
                                                     kPackedAttentionTiledQ),
