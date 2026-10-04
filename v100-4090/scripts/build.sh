@@ -14,6 +14,7 @@
 #   CCACHE_HOST  ccache directory on the host (default: ~/.cache/ninfer-ccache)
 #   JOBS         parallel compile jobs (default: number of CPUs - 1)
 #   MLP_V100     MLP width of rank 0 (default 7680); rank 1 gets 17408 - MLP_V100
+#   TESTS=1      also configure and build the test suite (BUILD_TESTING=ON); run it with scripts/test.sh
 #
 # A full build takes ~25-40 min per rank on a 6-core CPU; with a warm ccache, a rebuild after a small change takes seconds.
 set -euo pipefail
@@ -38,10 +39,11 @@ esac
 docker image inspect "$IMAGE" >/dev/null 2>&1 || {
   echo "image $IMAGE not found: docker build -f v100-4090/docker/Dockerfile.build -t $IMAGE v100-4090/docker"; exit 2; }
 mkdir -p "$CCACHE_HOST"
+TESTING=OFF; [ -n "${TESTS:-}" ] && TESTING=ON
 echo "building $DIR (sm_$ARCH, MLP width $([ "$TARGET" = v100 ] && echo $MLP_V100 || echo $MLP_4090)) from $SRC with $JOBS jobs"
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$SRC":/src -v "$CCACHE_HOST":/ccache "$IMAGE" bash -c "
-    cmake -S . -B $DIR -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DCMAKE_CUDA_ARCHITECTURES=$ARCH $OPTS \
+    cmake -S . -B $DIR -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=$TESTING -DCMAKE_CUDA_ARCHITECTURES=$ARCH $OPTS \
       -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
     nice -n 15 cmake --build $DIR -j$JOBS ${*:+--target $*}"
 ls -la "$SRC/$DIR/apps/ninfer-serve"
