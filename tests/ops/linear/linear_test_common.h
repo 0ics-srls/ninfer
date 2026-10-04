@@ -40,6 +40,9 @@ struct ShapeCase {
     Comparison comparison;
     bool verify_input_preservation;
     std::span<const Invocation> invocations;
+    // V100 build only: permute a W8G32_F16S weight into the load-time prepacked order of the TP2 text MLP
+    // (QuantLayout::VoltaQpnPrepacked) before the invocations, as the TP2 bindings do at load.
+    bool prepack_w8 = false;
 };
 
 using WeightGenerator = quantized_weight::PackedWeight (*)(std::int32_t, std::int32_t,

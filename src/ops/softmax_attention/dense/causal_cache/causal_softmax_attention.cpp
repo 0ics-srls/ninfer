@@ -2,6 +2,7 @@
 #include "ninfer/ops/softmax_attention.h"
 
 #include "core/layout.h"
+#include "core/paged_kv_cache.h"
 #include "core/paged_kv_storage.h"
 #include "ops/softmax_attention/dense/causal_cache/launch.h"
 #include "ops/softmax_attention/dense/causal_cache/geometry.cuh"
@@ -337,7 +338,7 @@ VoltaFlashWorkspace allocate_volta_flash_workspace(Allocator& workspace,
         workspace.alloc(
             DType::FP32,
             {2, static_cast<std::int32_t>(
-                    detail::causal_attention_volta_flash_meta_elements(q_heads, tokens)),
+                    detail::causal_attention_volta_flash_meta_elements(q_heads, tokens, n_kv)),
              1, 1}),
     };
 }
@@ -617,6 +618,17 @@ void causal_softmax_attention_cached(const Tensor& q, const Tensor& positions,
     const detail::CausalAttentionRoute route =
         detail::causal_attention_resolve_route(q.ne[1], q.ne[2], 1, cache.storage, envelope);
 #ifdef NINFER_VOLTA_BUILD
+    // Same routing as the appending entry, so the shared workspace query is exact for both: the flash route reads the
+    // keys already in the cache (no K/V to append, single-sequence table).
+    if (route == detail::CausalAttentionRoute::Prompt &&
+        volta_flash_route_possible(q.ne[1], q.ne[2], 1, cache.storage)) {
+        VoltaFlashWorkspace staging = allocate_volta_flash_workspace(workspace, q.ne[1], q.ne[2], envelope);
+        detail::causal_attention_volta_flash_launch(
+            q, Tensor{}, Tensor{}, positions, Tensor{}, scale, single_row_paged_kv_batch_view(cache), envelope,
+            detail::kVoltaFlashQBlockTokens, staging.k_gathered, staging.v_gathered, staging.mask, staging.q_f32,
+            staging.out_f32, staging.dst_meta, out, stream);
+        return;
+    }
     if (cache.storage == KvCacheStorage::Fp8E4M3Row256) {
         detail::causal_attention_prompt_attention_launch(q, positions, scale, cache, out, stream);
         return;

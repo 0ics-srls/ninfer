@@ -143,6 +143,7 @@ public:
     [[nodiscard]] static CompiledChatTemplate resolve(std::string_view source);
 
     [[nodiscard]] PromptCapabilities capabilities() const noexcept;
+    [[nodiscard]] ChatTemplateSemantics semantics() const noexcept { return semantics_; }
     [[nodiscard]] RenderedChat render(const std::vector<ChatMessage>& messages,
                                       ChatRenderOptions options = {}) const;
 

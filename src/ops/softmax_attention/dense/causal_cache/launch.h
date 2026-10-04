@@ -131,7 +131,8 @@ inline constexpr std::int32_t kVoltaFlashMinimumWidth = 64;
 inline constexpr std::int32_t kVoltaFlashMaskRowPad   = 64;
 inline constexpr std::int32_t kVoltaFlashKeyPad       = 256;
 
-std::size_t causal_attention_volta_flash_meta_elements(std::int32_t q_heads, std::int32_t tokens);
+std::size_t causal_attention_volta_flash_meta_elements(std::int32_t q_heads, std::int32_t tokens,
+                                                      std::int32_t n_kv);
 
 void causal_attention_volta_flash_launch(
     const Tensor& q, const Tensor& k, const Tensor& v, const Tensor& positions,

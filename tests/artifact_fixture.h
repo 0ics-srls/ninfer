@@ -81,4 +81,35 @@ inline TemporaryArtifact write_fixture(const Json& directory, std::string_view s
     return {std::move(path)};
 }
 
+// NInfer v3: 32-byte header (magic, JSON length, 16-byte artifact id), JSON directory, payload at the next 4096
+// boundary. Every object listed with offset/bytes gets its own marker byte (1, 2, ... in directory order).
+inline constexpr std::array<std::uint8_t, 8> kMagicV3 = {
+    'N', 'I', 'N', 'F', 'E', 'R', 0, 3,
+};
+
+inline TemporaryArtifact write_v3_fixture(const Json& directory, std::string_view suffix) {
+    const std::string json    = directory.dump();
+    const auto payload_offset = align_up(32 + json.size(), 4096);
+    std::uint64_t payload_bytes = 0;
+    for (const auto& object : directory.at("objects")) {
+        payload_bytes = std::max(payload_bytes, object.at("offset").get<std::uint64_t>() +
+                                                    object.at("bytes").get<std::uint64_t>());
+    }
+    std::vector<std::byte> file(payload_offset + payload_bytes, std::byte{0});
+    for (std::size_t i = 0; i < kMagicV3.size(); ++i) { file[i] = std::byte{kMagicV3[i]}; }
+    write_u64_le(file.data() + 8, json.size());
+    for (std::size_t i = 16; i < 32; ++i) { file[i] = std::byte{0xa5}; }
+    std::memcpy(file.data() + 32, json.data(), json.size());
+    std::uint8_t marker = 1;
+    for (const auto& object : directory.at("objects")) {
+        std::fill_n(file.data() + payload_offset + object.at("offset").get<std::uint64_t>(),
+                    object.at("bytes").get<std::uint64_t>(), std::byte{marker++});
+    }
+    auto path = std::filesystem::temp_directory_path() / ("ninfer_artifact_v3_" + std::string(suffix) + ".ninfer");
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(file.data()), static_cast<std::streamsize>(file.size()));
+    if (!output) { throw std::runtime_error("failed to write v3 artifact fixture"); }
+    return {std::move(path)};
+}
+
 } // namespace ninfer::test::artifact_fixture

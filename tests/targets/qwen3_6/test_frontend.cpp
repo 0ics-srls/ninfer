@@ -160,6 +160,13 @@ const std::string& reasoning_effort_template_source() {
     return source;
 }
 
+// The template NInfer v3 artifacts install in frontend/chat_template.jinja (raw bytes, digest a497db9e...).
+const std::string& maintained_reasoning_effort_template_source() {
+    static const std::string source =
+        read_file(NINFER_SOURCE_DIR "/tests/fixtures/frontend/maintained_reasoning_effort_chat_template.jinja");
+    return source;
+}
+
 const fi::CompiledChatTemplate& thinking_toggle_template() {
     static const fi::CompiledChatTemplate value =
         fi::CompiledChatTemplate::resolve(thinking_toggle_template_source());
@@ -1093,6 +1100,34 @@ int test_official_resource_guards() {
         check(throws_invalid_argument([&] { (void)FrontendFactory::create_component(mismatched); }),
               "different standalone and tokenizer-config chat templates were accepted");
 
+    // v3 pairing: maintained template in frontend/, the checkpoint's original in tokenizer_config.json.
+    FrontendResources v3_pair         = resources(maintained_reasoning_effort_template_source());
+    nlohmann::json v3_config          = nlohmann::json::parse(v3_pair.tokenizer_config_json);
+    v3_config["chat_template"]        = reasoning_effort_template_source();
+    v3_pair.tokenizer_config_json     = v3_config.dump();
+    failures += check(!throws_invalid_argument([&] { (void)FrontendFactory::create_component(v3_pair, false); }),
+                      "v3 maintained template with the original in tokenizer_config.json was rejected");
+    failures += check(FrontendFactory::create_component(v3_pair, false)
+                              .prompt_capabilities()
+                              .reasoning_effort.default_effort == ninfer::ReasoningEffort::XHigh,
+                      "v3 maintained template did not expose reasoning-effort capabilities");
+
+    FrontendResources v3_mixed     = resources(maintained_reasoning_effort_template_source());
+    nlohmann::json v3_mixed_config = nlohmann::json::parse(v3_mixed.tokenizer_config_json);
+    v3_mixed_config["chat_template"] = thinking_toggle_template_source();
+    v3_mixed.tokenizer_config_json   = v3_mixed_config.dump();
+    failures +=
+        check(throws_invalid_argument([&] { (void)FrontendFactory::create_component(v3_mixed); }),
+              "maintained reasoning-effort template paired with a thinking-toggle config was accepted");
+
+    FrontendResources missing     = resources();
+    nlohmann::json missing_config = nlohmann::json::parse(missing.tokenizer_config_json);
+    missing_config.erase("chat_template");
+    missing.tokenizer_config_json = missing_config.dump();
+    failures +=
+        check(throws_invalid_argument([&] { (void)FrontendFactory::create_component(missing); }),
+              "tokenizer_config.json without chat_template was accepted");
+
     FrontendResources unknown = resources("{{ messages }}");
     failures +=
         check(throws_invalid_argument([&] { (void)FrontendFactory::create_component(unknown); }),
@@ -1496,6 +1531,115 @@ int test_media_admission_uses_aggregate_resources(const Frontend& frontend) {
                           (void)processor.process(std::vector<fi::ChatMessage>{internal_message});
                       }),
                       "processor did not enforce the aggregate encoded-media byte budget");
+    return failures;
+}
+
+template <class Callable>
+bool throws_media_budget(Callable&& callable) {
+    try {
+        callable();
+    } catch (const ninfer::RequestError& error) {
+        return error.kind() == ninfer::RequestErrorKind::MediaBudgetExceeded;
+    }
+    return false;
+}
+
+class ScopedEnv {
+public:
+    ScopedEnv(const char* name, const char* value) : name_(name) {
+        if (const char* old = std::getenv(name)) { old_ = old; had_old_ = true; }
+        if (value != nullptr) { ::setenv(name, value, 1); } else { ::unsetenv(name); }
+    }
+    ~ScopedEnv() {
+        if (had_old_) { ::setenv(name_, old_.c_str(), 1); } else { ::unsetenv(name_); }
+    }
+    ScopedEnv(const ScopedEnv&)            = delete;
+    ScopedEnv& operator=(const ScopedEnv&) = delete;
+
+private:
+    const char* name_;
+    std::string old_;
+    bool had_old_ = false;
+};
+
+ninfer::PromptInput many_images_input(std::size_t count, int width, int height) {
+    ninfer::ChatMessage message;
+    message.role = ninfer::ChatRole::User;
+    for (std::size_t index = 0; index < count; ++index) {
+        ninfer::OwnedMedia media;
+        media.kind        = ninfer::MediaKind::Image;
+        media.bytes       = block_ppm(width, height, static_cast<std::uint8_t>(40 + index * 13));
+        media.media_type  = "image/x-portable-pixmap";
+        media.source_name = "photo-" + std::to_string(index) + ".ppm";
+        message.parts.push_back(ninfer::MessagePart{
+            .kind = ninfer::MessagePartKind::Media, .text = {}, .media = std::move(media)});
+    }
+    message.parts.push_back(
+        ninfer::MessagePart{.kind = ninfer::MessagePartKind::Text, .text = "describe", .media = {}});
+    ninfer::PromptInput input;
+    input.messages.push_back(std::move(message));
+    return input;
+}
+
+// NINFER_MAX_PROMPT_VISION_TOKENS: the aggregate Vision-token budget of one request. The default (32768) is about ten
+// 2048x1536 photos; a photo-description session that keeps eleven photos in the conversation must be accepted when
+// the budget is raised, and the budget needs a matching host media-live capacity.
+int test_prompt_vision_budget_env() {
+    constexpr std::size_t kPhotos   = 11;   // 11 x 3072 = 33792 Vision tokens > 32768
+    constexpr int kWidth            = 2048;
+    constexpr int kHeight           = 1536;
+    constexpr std::uint64_t kTokens = kPhotos * (kWidth / 32) * (kHeight / 32);
+    ninfer::targets::qwen3_6::FrontendOptions options;
+    options.vision_enabled   = true;
+    options.max_context      = 262'144;
+    options.media_live_bytes = 4ULL << 30;
+    int failures             = 0;
+
+    {
+        ScopedEnv env("NINFER_MAX_PROMPT_VISION_TOKENS", nullptr);
+        const Frontend frontend = FrontendFactory::create_component(resources(), options);
+        failures += check(throws_media_budget([&] {
+                              (void)frontend.prepare(many_images_input(kPhotos, kWidth, kHeight));
+                          }),
+                          "default Vision budget accepted 33792 Vision tokens in one request");
+    }
+    {
+        ScopedEnv env("NINFER_MAX_PROMPT_VISION_TOKENS", "262144");
+        const Frontend frontend = FrontendFactory::create_component(resources(), options);
+        const auto prepared     = frontend.prepare(many_images_input(kPhotos, kWidth, kHeight));
+        const auto& data        = FrontendFactory::inspect(prepared);
+        failures += check(data.vision_items.size() == kPhotos && data.prepare.vision_tokens == kTokens,
+                          "raised Vision budget did not accept eleven 2048x1536 photos");
+    }
+    {
+        ScopedEnv env("NINFER_MAX_PROMPT_VISION_TOKENS", "0");
+        failures += check(throws_invalid_argument([&] {
+                              (void)FrontendFactory::create_component(resources(), options);
+                          }),
+                          "a zero Vision budget was accepted");
+    }
+    {
+        ScopedEnv env("NINFER_MAX_PROMPT_VISION_TOKENS", "262144");
+        ninfer::targets::qwen3_6::FrontendOptions small_live = options;
+        small_live.media_live_bytes                          = ninfer::kDefaultMediaLiveBytes;
+        failures += check(throws_invalid_argument([&] {
+                              (void)FrontendFactory::create_component(resources(), small_live);
+                          }),
+                          "a 262144-token Vision budget started without the media-live capacity it needs");
+    }
+    {
+        // The budget never exceeds the context: at max_context 16384 the same eleven photos do not fit.
+        ScopedEnv env("NINFER_MAX_PROMPT_VISION_TOKENS", "262144");
+        ninfer::targets::qwen3_6::FrontendOptions short_context = options;
+        short_context.max_context                               = 16'384;
+        const Frontend frontend = FrontendFactory::create_component(resources(), short_context);
+        failures += check(throws_media_budget([&] {
+                              (void)frontend.prepare(many_images_input(kPhotos, kWidth, kHeight));
+                          }) || throws_context_length([&] {
+                              (void)frontend.prepare(many_images_input(kPhotos, kWidth, kHeight));
+                          }),
+                          "the Vision budget exceeded max_context");
+    }
     return failures;
 }
 
@@ -2246,6 +2390,7 @@ int main() {
     failures += test_explicit_leading_instruction_cache_boundary();
     failures += test_media_admission_uses_aggregate_resources(frontend);
     failures += test_multimodal_prompt_over_removed_32k_cap(frontend);
+    failures += test_prompt_vision_budget_env();
     failures += test_attention_pairs_are_diagnostic(frontend);
     failures += test_video_prepare(frontend);
     failures += test_cross_round_stop(frontend);

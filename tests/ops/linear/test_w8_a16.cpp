@@ -3,6 +3,7 @@
 #include <array>
 #include <exception>
 #include <iostream>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -24,6 +25,29 @@ int feature_conformance() {
         calls.push_back({t, CallForm::Policy, ninfer::ops::LinearPolicy::A16Only, true});
     return run_shape("W8_A16_feature", ActivationCompute::A16, make_w8g32_f16s_weight,
                      {5120, 25600, 293U, Comparison::Sampled, true, calls});
+}
+
+// Qwen3.8-27B text MLP of the two TP2 ranks (MLP split 7680 / 9728 of 17408 columns), at the token widths the
+// engine runs: decode and MTP verify (T 1..8: the V100 KB 2 configurations, NINFER_SM70_W8_KB2), the edge of the
+// prepacked kernel (T 32/33), and prefill chunks (wide T: row-major copy or CUTLASS, NINFER_W8_CUTLASS).
+// On the V100 build the weights are prepacked exactly as at load time.
+int tp2_mlp_conformance() {
+    std::vector<Invocation> calls;
+    for (int t : {1, 2, 3, 4, 5, 6, 7, 8, 9, 16, 17, 32, 33, 64, 128, 2048}) calls.push_back(a16(t));
+#if defined(NINFER_VOLTA_BUILD) && !defined(NINFER_ADA_BUILD)
+    constexpr bool kPrepacked = true;
+    const std::array<std::array<std::int32_t, 2>, 2> shapes{{{15360, 5120}, {5120, 7680}}};   // rank 0, V100
+#else
+    constexpr bool kPrepacked = false;
+    const std::array<std::array<std::int32_t, 2>, 2> shapes{{{19456, 5120}, {5120, 9728}}};   // rank 1, RTX 4090
+#endif
+    int failures  = 0;
+    unsigned seed = 451U;
+    for (const auto& nk : shapes) {
+        failures += run_shape("W8_A16_tp2_mlp", ActivationCompute::A16, make_w8g32_f16s_weight,
+                              {nk[0], nk[1], seed++, Comparison::Sampled, true, calls, kPrepacked});
+    }
+    return failures;
 }
 
 int w8_a16_conformance() {
@@ -168,19 +192,25 @@ int w8_a16_conformance() {
     }
 
     failures += feature_conformance();
+    failures += tp2_mlp_conformance();
 
     return failures;
 }
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     if (!ninfer::test::linear::cuda_available()) {
         std::cout << "SKIP: no usable CUDA device\n";
         return 77;
     }
 
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--tp2-mlp-only") {
+            const int failures = tp2_mlp_conformance();
+            std::cout << (failures == 0 ? "OK" : "FAIL") << " W8_A16 TP2 MLP Linear\n";
+            return failures == 0 ? 0 : 1;
+        }
         const int failures = w8_a16_conformance();
         std::cout << (failures == 0 ? "OK" : "FAIL") << " W8_A16 Linear\n";
         return failures == 0 ? 0 : 1;

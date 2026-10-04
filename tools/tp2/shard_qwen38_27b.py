@@ -140,6 +140,8 @@ def shard_payload(obj: TensorObject, raw: memoryview, rule: Rule, rank: int) -> 
             codes, scales = take(codes, 0, rule, rank), take(scales, 0, rule, rank)
         else:
             assert geom.groups_per_row * 32 == shape[-1], "padded K not supported for K split"
+            if any(rule.piece(seg, r)[1] % 128 for seg in rule.segments for r in range(TP)):
+                raise ValueError(f"W8 K split of {obj.name} must cut on 128-column row-split blocks: {rule}")
             codes = take_frac(codes, 1, rule, rank, 1, 32)
             scales = take_frac(scales, 1, rule, rank, 1, 32)
         return L.encode_row_split(codes, scales, fmt, new_shape)

@@ -268,6 +268,15 @@ int run_softmax_attention_plain_and_packed_tests() {
         run_case({0, 68, 136}, 101u, StorageProfile::InterleavedQkv, PublicEntry::UniformSegments);
     failures +=
         run_case({0, 256}, 2026u, StorageProfile::InterleavedQkv, PublicEntry::CuSeqlensArena);
+    // Vision-encoder sizes. On the Volta path these run the tiled SIMT and FP16 tensor-core kernels
+    // (NINFER_VISION_ATTN): segments spanning many 64-key tiles, tails that are not a multiple of 64,
+    // 32/64-query blocks that straddle two images, and isolation between images.
+    failures += run_case({0, 1300, 2000, 4100}, 4242u, StorageProfile::InterleavedQkv,
+                         PublicEntry::CuSeqlensArena);
+    failures += run_case({0, 1300, 2000, 4100}, 4243u, StorageProfile::InterleavedQkv,
+                         PublicEntry::CuSeqlensArena, InputProfile::SegmentIsolation);
+    failures += run_case({0, 1024, 2048, 3072}, 4244u, StorageProfile::InterleavedQkv,
+                         PublicEntry::UniformSegments);
 
     if (failures != 0) {
         std::cerr << "packed_softmax_attention failures=" << failures << '\n';

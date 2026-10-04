@@ -53,6 +53,7 @@ endfunction()
 
 # Artifact framing and model-independent runtime contracts.
 ninfer_add_test(ninfer_artifact_reader_test
+  NEEDS_SOURCE_DIR
   SOURCES test_ninfer_artifact_reader.cpp
   LIBRARIES ninfer_artifact)
 ninfer_add_test(ninfer_artifact_materialization_test
@@ -102,6 +103,11 @@ set_tests_properties(
   ninfer_kv_cache_test
   ninfer_state_store_test
   PROPERTIES SKIP_RETURN_CODE 77)
+# TP2 (V100 + RTX 4090) target: 8-bit wire for the prefill reductions. Runs on both rank builds against the
+# same host oracle, which proves the combined residual is bit-identical on the two cards.
+ninfer_add_op_test(ninfer_tp2_wire8_test
+  SOURCES targets/qwen3_6_27b_tp2/test_tp2_wire8.cpp
+  LIBRARIES ninfer_engine ninfer_core)
 # Family frontend and one opt-in real-artifact prefix/MTP integration test.
 ninfer_add_test(ninfer_qwen3_6_frontend_test
   SOURCES targets/qwen3_6/test_frontend.cpp
@@ -271,7 +277,8 @@ ninfer_add_op_test(ninfer_softmax_attention_test
           ops/softmax_attention/plain_and_packed.cpp
           ops/softmax_attention/context.cpp
   LIBRARIES ninfer_ops)
-if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+# NVFP4 / K8V4 KV cache, NVFP4 A4 and FP8 A8 are Blackwell-native routes: absent from the Volta path (both TP2 ranks).
+if(NOT NINFER_VOLTA_PATH)
   add_test(NAME ninfer_softmax_attention_nvfp4_test
     COMMAND ninfer_softmax_attention_test --nvfp4-only)
   add_test(NAME ninfer_softmax_attention_k8v4_test
@@ -281,13 +288,33 @@ if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
     ninfer_softmax_attention_k8v4_test
     PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+# Volta path (both TP2 ranks): the packed (vision-encoder) attention has three kernels selected by
+# NINFER_VISION_ATTN; the default (2, FP16 tensor cores) runs in the main test, the other two here.
+if(NINFER_VOLTA_PATH)
+  foreach(mode 0 1)
+    add_test(NAME ninfer_softmax_attention_packed_vision${mode}_test
+      COMMAND ninfer_softmax_attention_test --packed-only)
+    set_tests_properties(ninfer_softmax_attention_packed_vision${mode}_test PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "NINFER_VISION_ATTN=${mode}")
+  endforeach()
+  # TP2 rank causal attention at long context: the one-CTA small-T kernel (NINFER_SM70_ATTN_V2D=0) and the old
+  # 64-token flash threshold remain selectable, so they stay tested.
+  foreach(variant "NINFER_SM70_ATTN_V2D=0" "NINFER_VOLTA_FLASH_MIN_WIDTH=64")
+    string(REGEX REPLACE "^NINFER_([A-Z0-9_]+)=([0-9]+)$" "\\1_\\2" suffix "${variant}")
+    string(TOLOWER "${suffix}" suffix)
+    add_test(NAME ninfer_softmax_attention_tp2_rank_${suffix}_test
+      COMMAND ninfer_softmax_attention_test --tp2-rank-only)
+    set_tests_properties(ninfer_softmax_attention_tp2_rank_${suffix}_test PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "${variant}")
+  endforeach()
+endif()
 ninfer_add_op_test(ninfer_sliding_window_attention_test
   SOURCES ops/test_sliding_window_attention.cpp
   LIBRARIES ninfer_ops)
 ninfer_add_op_test(ninfer_kv_cache_append_test
   SOURCES ops/test_kv_cache_append.cpp
   LIBRARIES ninfer_ops)
-if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+if(NOT NINFER_VOLTA_PATH)
   add_test(NAME ninfer_kv_cache_append_nvfp4_test
     COMMAND ninfer_kv_cache_append_test --nvfp4-only)
   add_test(NAME ninfer_kv_cache_append_k8v4_test
@@ -316,12 +343,24 @@ ninfer_add_linear_test(ninfer_linear_q4_a16_test ops/linear/test_q4_a16.cpp)
 ninfer_add_linear_test(ninfer_linear_q5_a16_test ops/linear/test_q5_a16.cpp)
 ninfer_add_linear_test(ninfer_linear_q6_a16_test ops/linear/test_q6_a16.cpp)
 ninfer_add_linear_test(ninfer_linear_w8_a16_test ops/linear/test_w8_a16.cpp)
+# TP2 text MLP on the V100: the previous KB 4 configurations (NINFER_SM70_W8_KB2=0) and the prefill route without
+# CUTLASS (NINFER_W8_CUTLASS=0) stay selectable, so they stay tested.
+if(NINFER_VOLTA_PATH)
+  foreach(variant "NINFER_SM70_W8_KB2=0" "NINFER_W8_CUTLASS=0")
+    string(REGEX REPLACE "^NINFER_|=0$" "" suffix "${variant}")
+    string(TOLOWER "${suffix}" suffix)
+    add_test(NAME ninfer_linear_w8_a16_tp2_mlp_${suffix}_off_test
+      COMMAND ninfer_linear_w8_a16_test --tp2-mlp-only)
+    set_tests_properties(ninfer_linear_w8_a16_tp2_mlp_${suffix}_off_test PROPERTIES
+      SKIP_RETURN_CODE 77 ENVIRONMENT "${variant}")
+  endforeach()
+endif()
 ninfer_add_linear_test(ninfer_linear_nvfp4_a16_test ops/linear/test_nvfp4_a16.cpp)
-if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+if(NOT NINFER_VOLTA_PATH)
 ninfer_add_linear_test(ninfer_linear_nvfp4_a4_test ops/linear/test_nvfp4_a4.cpp)
 endif()
 ninfer_add_linear_test(ninfer_linear_fp8_a16_test ops/linear/test_fp8_a16.cpp)
-if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "70")
+if(NOT NINFER_VOLTA_PATH)
 ninfer_add_linear_test(ninfer_linear_fp8_a8_test ops/linear/test_fp8_a8.cpp)
 endif()
 ninfer_add_op_test(ninfer_linear_bf16_a16_test

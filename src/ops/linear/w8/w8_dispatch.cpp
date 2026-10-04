@@ -275,7 +275,7 @@ W8Launch select_w8_launch(std::int32_t n, std::int32_t k, std::int32_t t, Linear
         // TP2 rank shards of the Qwen3.8-27B MTP projections are not in the exact-shape table;
         // on Volta every route that table could pick is replaced by a shape-generic one anyway.
         const bool tp2_half = (n == 7168 && k == 5120) || (n == 5120 && k == 3072) ||
-                              (n == 2 * kTp2Intermediate && k == 5120) || (n == 5120 && k == kTp2Intermediate) ||
+                              is_tp2_mlp_gate_up_shard(n, k) || is_tp2_mlp_down_shard(n, k) ||
                               (n == 3072 && k == 5120) || (n == 512 && k == 5120);
         if (tp2_half && t > 0) {
 #if !defined(NINFER_ADA_BUILD)

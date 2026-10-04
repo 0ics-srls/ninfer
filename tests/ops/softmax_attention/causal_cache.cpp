@@ -1810,7 +1810,8 @@ int run_a1_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     failures += dout.verify_guards((label + " output").c_str());
     failures += workspace_buffer.verify_guards((label + " workspace").c_str());
     if (workspace.used() != 0 || workspace.peak_used() != workspace_bytes) {
-        std::cerr << label << ": workspace query/execution high-water mismatch\n";
+        std::cerr << label << ": workspace query/execution high-water mismatch (query " << workspace_bytes
+                  << " B, peak " << workspace.peak_used() << " B, still used " << workspace.used() << " B)\n";
         ++failures;
     }
     failures += cache.verify_guards(label);
@@ -1874,7 +1875,8 @@ int run_a3_case(const Geometry& geometry, KvCacheStorage storage, const Attentio
     failures += dout.verify_guards((label + " output").c_str());
     failures += workspace_buffer.verify_guards((label + " workspace").c_str());
     if (workspace.used() != 0 || workspace.peak_used() != workspace_bytes) {
-        std::cerr << label << ": workspace query/execution high-water mismatch\n";
+        std::cerr << label << ": workspace query/execution high-water mismatch (query " << workspace_bytes
+                  << " B, peak " << workspace.peak_used() << " B, still used " << workspace.used() << " B)\n";
         ++failures;
     }
     failures += cache.verify_guards(label);
@@ -2483,6 +2485,30 @@ int run_softmax_attention_k8v4_tests() {
     return failures == 0 ? 0 : 1;
 }
 
+// TP2 rank attention (h12-kv2, the shard of d256-h24-kv4) with an int8 KV cache at long context: the shapes the
+// engine runs on the V100. Decode and MTP verify widths (1, 5) take the two-CTA small-T kernel
+// (NINFER_SM70_ATTN_V2D); 16/17 and 63/64 straddle the Volta flash routing threshold (NINFER_VOLTA_FLASH_MIN_WIDTH,
+// 17 by default) and the old 64-token threshold.
+int run_tp2_rank_long_context_cases() {
+    const Geometry& geometry = kGeometries[2];
+    int failures             = 0;
+    const AttentionCase cases[] = {
+        {1, 39999, 40960, 611u},  {5, 32763, 40960, 612u},  {16, 30000, 32768, 613u},
+        {17, 30000, 32768, 614u}, {63, 30000, 32768, 615u}, {64, 30000, 32768, 616u},
+    };
+    for (const AttentionCase& test_case : cases) {
+        failures += run_a1_case(geometry, KvCacheStorage::Int8Group64, test_case, MappingPattern::Fragmented);
+    }
+    return failures;
+}
+
+int run_softmax_attention_tp2_rank_tests() {
+    if (cuda_unavailable()) return 77;
+    const int failures = run_tp2_rank_long_context_cases();
+    std::cout << (failures ? "FAIL" : "PASS") << " TP2 rank long-context causal attention\n";
+    return failures ? 1 : 0;
+}
+
 int run_softmax_attention_causal_cache_tests() {
     if (cuda_unavailable()) {
         std::cout << "SKIP: no usable CUDA device\n";
@@ -2502,6 +2528,7 @@ int run_softmax_attention_causal_cache_tests() {
     failures += run_fp8_cases();
     failures += run_batch_cases();
     failures += run_dflash2_cases();
+    failures += run_tp2_rank_long_context_cases();
     std::cout << (failures == 0 ? "PASS" : "FAIL")
               << " causal_softmax_attention public-contract correctness\n";
     return failures == 0 ? 0 : 1;

@@ -1,0 +1,298 @@
+{
+ "directory": {
+  "metadata": {
+   "name": "fixture-v3",
+   "tensor_parallel": {
+    "ranks": 2,
+    "rank": 0,
+    "mlp_intermediate": [
+     2,
+     2
+    ]
+   }
+  },
+  "provenance": {
+   "recipe": "qwen3_8_27b_nvfp4"
+  },
+  "components": {
+   "text": {
+    "resources": {
+     "tokenizer.json": "resource/text/tokenizer.json"
+    }
+   }
+  },
+  "objects": [
+   {
+    "id": "resource/text/tokenizer.json",
+    "kind": "resource",
+    "encoding": "raw_bytes_v1",
+    "bytes": 5,
+    "offset": 0
+   },
+   {
+    "id": "w/embedding",
+    "kind": "tensor",
+    "shape": [
+     4,
+     8
+    ],
+    "format": "bf16",
+    "layout": "contiguous_le_v1",
+    "bytes": 64,
+    "offset": 256
+   },
+   {
+    "id": "w/gdn_ab",
+    "kind": "tensor",
+    "shape": [
+     4,
+     8
+    ],
+    "format": "bf16",
+    "layout": "contiguous_le_v1",
+    "bytes": 64,
+    "offset": 512
+   },
+   {
+    "id": "w/mlp_gate_up",
+    "kind": "tensor",
+    "shape": [
+     4,
+     32
+    ],
+    "format": "q8_g32_fp16",
+    "layout": "row_split_k128_v1",
+    "bytes": 544,
+    "offset": 768
+   },
+   {
+    "id": "s/mlp_gate_divisor",
+    "kind": "tensor",
+    "shape": [],
+    "format": "fp32",
+    "layout": "contiguous_le_v1",
+    "bytes": 4,
+    "offset": 1536
+   },
+   {
+    "id": "s/mlp_up_divisor",
+    "kind": "tensor",
+    "shape": [],
+    "format": "fp32",
+    "layout": "contiguous_le_v1",
+    "bytes": 4,
+    "offset": 1792
+   },
+   {
+    "id": "w/attention_output",
+    "kind": "tensor",
+    "shape": [
+     2,
+     4
+    ],
+    "format": "fp8_e4m3fn_row_bf16",
+    "layout": "row_scale_v1",
+    "bytes": 260,
+    "offset": 2048
+   },
+   {
+    "id": "w/mtp_norm",
+    "kind": "tensor",
+    "shape": [
+     8
+    ],
+    "format": "bf16",
+    "layout": "contiguous_le_v1",
+    "bytes": 16,
+    "offset": 2560
+   },
+   {
+    "id": "w/vision_norm1",
+    "kind": "tensor",
+    "shape": [
+     8
+    ],
+    "format": "bf16",
+    "layout": "contiguous_le_v1",
+    "bytes": 16,
+    "offset": 2816
+   },
+   {
+    "id": "w/vision_merger_norm_bias",
+    "kind": "tensor",
+    "shape": [
+     8
+    ],
+    "format": "bf16",
+    "layout": "contiguous_le_v1",
+    "bytes": 16,
+    "offset": 3072
+   },
+   {
+    "id": "w/vision_qkv",
+    "kind": "tensor",
+    "shape": [
+     6,
+     8
+    ],
+    "format": "bf16",
+    "layout": "contiguous_le_v1",
+    "bytes": 96,
+    "offset": 3328
+   },
+   {
+    "id": "w/proposal_head",
+    "kind": "tensor",
+    "shape": [
+     4,
+     8
+    ],
+    "format": "bf16",
+    "layout": "contiguous_le_v1",
+    "bytes": 64,
+    "offset": 3584
+   }
+  ],
+  "bindings": {
+   "text/embedding": {
+    "object": "w/embedding"
+   },
+   "text/layers/0/gdn/a_projection": {
+    "parts": [
+     {
+      "object": "w/gdn_ab",
+      "range": [
+       0,
+       2
+      ]
+     }
+    ]
+   },
+   "text/layers/0/gdn/b_projection": {
+    "parts": [
+     {
+      "object": "w/gdn_ab",
+      "range": [
+       2,
+       4
+      ]
+     }
+    ]
+   },
+   "text/layers/3/mlp/gate": {
+    "parts": [
+     {
+      "object": "w/mlp_gate_up",
+      "range": [
+       0,
+       2
+      ]
+     }
+    ]
+   },
+   "text/layers/3/mlp/up": {
+    "parts": [
+     {
+      "object": "w/mlp_gate_up",
+      "range": [
+       2,
+       4
+      ]
+     }
+    ]
+   },
+   "text/layers/1/attention/output": {
+    "object": "w/attention_output"
+   },
+   "mtp/layers/0/norm": {
+    "object": "w/mtp_norm"
+   },
+   "vision/layers/2/norm1_weight": {
+    "object": "w/vision_norm1"
+   },
+   "vision/merger/norm_bias": {
+    "object": "w/vision_merger_norm_bias"
+   },
+   "vision/layers/2/attention/query": {
+    "parts": [
+     {
+      "object": "w/vision_qkv",
+      "range": [
+       0,
+       2
+      ]
+     }
+    ]
+   },
+   "vision/layers/2/attention/key": {
+    "parts": [
+     {
+      "object": "w/vision_qkv",
+      "range": [
+       2,
+       4
+      ]
+     }
+    ]
+   },
+   "vision/layers/2/attention/value": {
+    "parts": [
+     {
+      "object": "w/vision_qkv",
+      "range": [
+       4,
+       6
+      ]
+     }
+    ]
+   },
+   "proposal/head": {
+    "object": "w/proposal_head"
+   }
+  },
+  "uses": [
+   {
+    "parameter": "text/layers/3/mlp/gate",
+    "auxiliaries": {
+     "activation_input_divisor": {
+      "object": "s/mlp_gate_divisor"
+     }
+    }
+   },
+   {
+    "parameter": "text/layers/3/mlp/up",
+    "auxiliaries": {
+     "activation_input_divisor": {
+      "object": "s/mlp_up_divisor"
+     }
+    }
+   }
+  ],
+  "files": [
+   {
+    "path": null,
+    "payload_bytes": 3648
+   }
+  ]
+ },
+ "expected": {
+  "identity": {
+   "model_id": "fixture-v3",
+   "weights_id": "nvfp4-tp2"
+  },
+  "names": {
+   "resource/text/tokenizer.json": "frontend/tokenizer.json",
+   "w/embedding": "text/embedding",
+   "w/gdn_ab": "text/layers/0/gdn/a_b_projection",
+   "w/mlp_gate_up": "text/layers/3/mlp/gate_up",
+   "s/mlp_gate_divisor": "text/layers/3/mlp/gate_up_projection/input_scale_divisor",
+   "s/mlp_up_divisor": "text/layers/3/mlp/gate_up_projection/input_scale_divisor",
+   "w/attention_output": "text/layers/1/attention/output",
+   "w/mtp_norm": "mtp/layer/norm",
+   "w/vision_norm1": "vision/layers/2/norm1/weight",
+   "w/vision_merger_norm_bias": "vision/merger/norm/bias",
+   "w/vision_qkv": "vision/layers/2/attention/qkv",
+   "w/proposal_head": "text/draft_head"
+  }
+ }
+}

@@ -31,6 +31,7 @@
 #include <cuda_fp16.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace ninfer::ops::detail {
@@ -98,12 +99,37 @@ constexpr int kKeyPad = FATTN_KQ_STRIDE;
 
 constexpr int round_up_keys(int n) { return ((n + kKeyPad - 1) / kKeyPad) * kKeyPad; }
 
+// On Volta (and on the Turing-class path of the sm_89 build) the vendored kernel accumulates P*V in FP16 registers
+// (T_C_VKQ is half2: an FP32 accumulator does not fit the registers at DV = 256), so its error grows with the keys one
+// block sums before the stream-K fixup combines the partials in FP32. Capping the keys per block bounds that FP16 run.
+// NINFER_VOLTA_FLASH_SPLIT_KEYS: maximum keys per block (0 = the launch's natural stream-K split).
+int flash_split_keys() {
+    static const int value = [] {
+        const char* env = std::getenv("NINFER_VOLTA_FLASH_SPLIT_KEYS");
+        if (env == nullptr || env[0] == 0) return 0;
+        const long parsed = std::strtol(env, nullptr, 10);
+        return parsed > 0 && parsed <= (1 << 20) ? static_cast<int>(parsed) : 0;
+    }();
+    return value;
+}
+
+// Blocks per destination tile so that no block sums more than flash_split_keys() keys (1 = no cap).
+int flash_key_splits(int n_kv, int nbatch_fa) {
+    const int cap = flash_split_keys();
+    if (cap <= 0) return 1;
+    const int tiles_kv  = (n_kv + nbatch_fa - 1) / nbatch_fa;
+    const int cap_tiles = std::max(1, cap / nbatch_fa);
+    return (tiles_kv + cap_tiles - 1) / cap_tiles;
+}
+
 // ---------------------------------------------------------------------------
 // Staging kernels
 // ---------------------------------------------------------------------------
 
 __device__ __forceinline__ const std::int32_t* select_block_table(
         const std::int32_t* block_tables, const std::int32_t* table_rows, int logical_pages) {
+    // No row tensor: a single-sequence view (causal_softmax_attention_cached), whose table is row 0.
+    if (table_rows == nullptr) { return block_tables; }
     return block_tables + static_cast<std::int64_t>(table_rows[0]) * logical_pages;
 }
 
@@ -411,7 +437,10 @@ void launch_flash_block(const float* q_f32, const half* k_f16, const half* v_f16
     const int raw     = std::min(max_blocks, ntiles_KV * ntiles_dst);
     const int rounded = (raw / ntiles_dst) * ntiles_dst;
     const int loss    = rounded > 0 ? 100 * (raw - rounded) / raw : 100;
-    const int nblocks = loss <= 5 ? rounded : raw;
+    int nblocks       = loss <= 5 ? rounded : raw;
+    // Key cap: a whole number of blocks per destination tile, so the uniform fixup combines them in FP32.
+    const int splits = flash_key_splits(n_kv, c.nbatch_fa);
+    if (splits > 1 && nblocks < splits * ntiles_dst) { nblocks = splits * ntiles_dst; }
 
     const dim3 block_dim(WARP_SIZE, c.nwarps, 1);
     const dim3 blocks_num(nblocks, 1, 1);
@@ -465,14 +494,14 @@ void launch_flash_block(const float* q_f32, const half* k_f16, const half* v_f16
 // ---------------------------------------------------------------------------
 
 template <typename Geometry>
-std::size_t meta_elements_impl(std::int32_t tokens) {
+std::size_t meta_elements_impl(std::int32_t tokens, std::int32_t n_kv) {
     using P                    = VoltaFlashParams<Geometry>;
     const FlashLaunchConfig& c = flash_launch_config<Geometry>();
     const int ntiles_x         = (tokens + P::kNcols1 - 1) / P::kNcols1;
     const int ntiles_dst = ntiles_x * ((P::kGroup + P::kNcols2 - 1) / P::kNcols2) * P::kKVHeads;
     const int max_blocks = c.blocks_per_sm * c.nsm;
     // Upper bound: the launch never uses more blocks than this.
-    const int nblocks = std::max(max_blocks, ntiles_dst);
+    const int nblocks = std::max({max_blocks, ntiles_dst, flash_key_splits(round_up_keys(n_kv), c.nbatch_fa) * ntiles_dst});
     return static_cast<std::size_t>(nblocks) * P::kNcols * (2 + kDV / 2);
 }
 
@@ -494,8 +523,10 @@ void volta_flash_launch_impl(const Tensor& q, const Tensor& k, const Tensor& v,
     auto* rows         = static_cast<const std::int32_t*>(table_rows.data);
     auto* position_ptr = static_cast<const std::int32_t*>(positions.data);
 
-    // 1. Append this call's K/V for the whole width.
-    if (cache.storage == KvCacheStorage::Int8Group64) {
+    // 1. Append this call's K/V for the whole width. The cached entry passes no K/V: its keys are already in the cache.
+    if (k.data == nullptr) {
+        // nothing to append
+    } else if (cache.storage == KvCacheStorage::Int8Group64) {
         constexpr int kWarpsPerBlock = 8;
         const int units              = width * kKVHeads;
         const int blocks             = (units + kWarpsPerBlock - 1) / kWarpsPerBlock;
@@ -588,10 +619,11 @@ void volta_flash_launch_impl(const Tensor& q, const Tensor& k, const Tensor& v,
 
 // The two registered geometries differ only in tiling; both are instantiated so
 // the route can serve 27B (24q/4kv) and 35B-A3B (16q/2kv) from one launcher.
-std::size_t causal_attention_volta_flash_meta_elements(std::int32_t q_heads, std::int32_t tokens) {
-    if (q_heads == CausalD256H12Kv2::QHeads) { return meta_elements_impl<CausalD256H12Kv2>(tokens); }
-    if (q_heads == CausalD256H24Kv4::QHeads) { return meta_elements_impl<CausalD256H24Kv4>(tokens); }
-    if (q_heads == CausalD256H16Kv2::QHeads) { return meta_elements_impl<CausalD256H16Kv2>(tokens); }
+std::size_t causal_attention_volta_flash_meta_elements(std::int32_t q_heads, std::int32_t tokens,
+                                                      std::int32_t n_kv) {
+    if (q_heads == CausalD256H12Kv2::QHeads) { return meta_elements_impl<CausalD256H12Kv2>(tokens, n_kv); }
+    if (q_heads == CausalD256H24Kv4::QHeads) { return meta_elements_impl<CausalD256H24Kv4>(tokens, n_kv); }
+    if (q_heads == CausalD256H16Kv2::QHeads) { return meta_elements_impl<CausalD256H16Kv2>(tokens, n_kv); }
     throw std::invalid_argument("gqa_attention volta flash: unsupported Q head geometry");
 }
 

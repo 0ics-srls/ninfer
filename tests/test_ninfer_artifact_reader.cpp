@@ -3,7 +3,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
+#include <fstream>
 #include <cstdint>
 #include <iostream>
 #include <span>
@@ -22,6 +24,7 @@ using ninfer::artifact::StorageLayout;
 using ninfer::artifact::TensorDescriptor;
 using Json = nlohmann::json;
 using ninfer::test::artifact_fixture::write_fixture;
+using ninfer::test::artifact_fixture::write_v3_fixture;
 
 Json normative_directory() {
     return {
@@ -195,6 +198,88 @@ void test_common_validation() {
     }
 }
 
+// tests/fixtures/artifact/v3_directory.json is shared with tests/artifact/test_v3.py: both readers must map the same
+// v3 directory onto the same stored-object names and identity.
+Json v3_fixture() {
+    std::ifstream input(NINFER_SOURCE_DIR "/tests/fixtures/artifact/v3_directory.json");
+    if (!input) { throw std::runtime_error("cannot open tests/fixtures/artifact/v3_directory.json"); }
+    return Json::parse(input);
+}
+
+void test_v3_fixture() {
+    const Json fixture  = v3_fixture();
+    const Json& expected = fixture.at("expected");
+    auto file           = write_v3_fixture(fixture.at("directory"), "valid");
+    Reader reader(file.path);
+    if (reader.identity().model_id != expected.at("identity").at("model_id").get<std::string>() ||
+        reader.identity().weights_id != expected.at("identity").at("weights_id").get<std::string>()) {
+        throw std::runtime_error("v3 identity mismatch: " + reader.identity().model_id + " / " +
+                                 reader.identity().weights_id);
+    }
+    // Each object's payload carries its directory-order marker; duplicated activation scalars resolve to the first.
+    const Json& objects = fixture.at("directory").at("objects");
+    std::vector<std::string> distinct;
+    for (std::size_t i = 0; i < objects.size(); ++i) {
+        const auto id   = objects[i].at("id").get<std::string>();
+        const auto name = expected.at("names").at(id).get<std::string>();
+        const auto* object = reader.find(name);
+        if (object == nullptr) { throw std::runtime_error("v3 object " + id + " not found as " + name); }
+        if (std::find(distinct.begin(), distinct.end(), name) != distinct.end()) { continue; }
+        distinct.push_back(name);
+        const auto payload = reader.payload(*object);
+        if (payload.data.size() != objects[i].at("bytes").get<std::uint64_t>() ||
+            payload.data.front() != std::byte(i + 1) || payload.data.back() != std::byte(i + 1)) {
+            throw std::runtime_error("v3 payload span mismatch for " + name);
+        }
+    }
+    if (reader.objects().size() != distinct.size() || reader.payload_offset() != 4096) {
+        throw std::runtime_error("v3 object count or payload offset mismatch");
+    }
+    const auto* gate_up = std::get_if<TensorDescriptor>(reader.find("text/layers/3/mlp/gate_up"));
+    const auto* output  = std::get_if<TensorDescriptor>(reader.find("text/layers/1/attention/output"));
+    if (gate_up == nullptr || gate_up->format != NumericFormat::W8G32_F16S ||
+        gate_up->layout != StorageLayout::RowSplitK128V1 || gate_up->shape != std::vector<std::uint64_t>({4, 32}) ||
+        output == nullptr || output->format != NumericFormat::FP8_E4M3FN_ROW_BF16S ||
+        output->layout != StorageLayout::RowScaleV1 ||
+        std::get_if<ResourceDescriptor>(reader.find("frontend/tokenizer.json")) == nullptr) {
+        throw std::runtime_error("v3 object signature mismatch");
+    }
+}
+
+void test_v3_validation() {
+    const Json directory = v3_fixture().at("directory");
+    {
+        auto broken = directory;
+        broken["bindings"].erase("text/embedding");
+        auto file = write_v3_fixture(broken, "unbound");
+        expect_artifact_error([&] { Reader reader(file.path); }, "v3 object without binding");
+    }
+    {
+        auto broken                   = directory;
+        broken["objects"][3]["bytes"] = 543;
+        auto file                     = write_v3_fixture(broken, "wrong_size");
+        expect_artifact_error([&] { Reader reader(file.path); }, "v3 tensor with wrong encoded size");
+    }
+    {
+        auto broken                    = directory;
+        broken["objects"][1]["offset"] = 257;
+        auto file                      = write_v3_fixture(broken, "misaligned");
+        expect_artifact_error([&] { Reader reader(file.path); }, "misaligned v3 object");
+    }
+    {
+        auto broken = directory;
+        broken["files"].push_back(broken["files"][0]);
+        auto file = write_v3_fixture(broken, "continuation");
+        expect_artifact_error([&] { Reader reader(file.path); }, "v3 continuation files");
+    }
+    {
+        auto broken                    = directory;
+        broken["objects"][2]["format"] = "fp16";
+        auto file                      = write_v3_fixture(broken, "unknown_format");
+        expect_artifact_error([&] { Reader reader(file.path); }, "unknown v3 format");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -202,6 +287,8 @@ int main() {
         test_registered_sizes();
         test_normative_fixture();
         test_common_validation();
+        test_v3_fixture();
+        test_v3_validation();
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -15,6 +15,7 @@
 #   JOBS         parallel compile jobs (default: number of CPUs - 1)
 #   MLP_V100     MLP width of rank 0 (default 7680); rank 1 gets 17408 - MLP_V100
 #   TESTS=1      also configure and build the test suite (BUILD_TESTING=ON); run it with scripts/test.sh
+#   KEEP_GOING=1 keep compiling after an error, to see every failing unit at once
 #
 # A full build takes ~25-40 min per rank on a 6-core CPU; with a warm ccache, a rebuild after a small change takes seconds.
 set -euo pipefail
@@ -45,5 +46,5 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$SRC":/src -v "$CCACHE_HOST":/ccache "$IMAGE" bash -c "
     cmake -S . -B $DIR -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=$TESTING -DCMAKE_CUDA_ARCHITECTURES=$ARCH $OPTS \
       -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache &&
-    nice -n 15 cmake --build $DIR -j$JOBS ${*:+--target $*}"
+    nice -n 15 cmake --build $DIR -j$JOBS ${*:+--target $*} ${KEEP_GOING:+-- -k 0}"
 ls -la "$SRC/$DIR/apps/ninfer-serve"

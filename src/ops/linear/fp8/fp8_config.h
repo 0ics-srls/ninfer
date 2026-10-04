@@ -164,18 +164,18 @@ enum class Fp8Problem : std::uint8_t {
 // kernels, so they share the full-shape problem classes (route thresholds only depend on T).
 inline constexpr bool is_fp8_tp2_half_problem(std::int32_t output_rows, std::int32_t input_rows) {
     return (output_rows == 7168 && input_rows == 5120) || (output_rows == 8192 && input_rows == 5120) ||
-           (output_rows == 2 * kTp2Intermediate && input_rows == 5120) ||
+           is_tp2_mlp_gate_up_shard(output_rows, input_rows) ||
            (output_rows == 5120 && input_rows == 3072) ||
-           (output_rows == 5120 && input_rows == kTp2Intermediate) ||
+           is_tp2_mlp_down_shard(output_rows, input_rows) ||
            (output_rows == 124160 && input_rows == 5120);
 }
 // The MLP shard width may be uneven (tp2_shape.h): map it to the full 17408 explicitly, the rest is halved.
 inline constexpr std::int32_t fp8_tp2_full_output_rows(std::int32_t output_rows, std::int32_t input_rows) {
-    if (output_rows == 2 * kTp2Intermediate && input_rows == 5120) { return 2 * kTp2FullIntermediate; }
+    if (is_tp2_mlp_gate_up_shard(output_rows, input_rows)) { return 2 * kTp2FullIntermediate; }
     return input_rows == 5120 ? output_rows * 2 : output_rows;
 }
 inline constexpr std::int32_t fp8_tp2_full_input_rows(std::int32_t output_rows, std::int32_t input_rows) {
-    if (output_rows == 5120 && input_rows == kTp2Intermediate) { return kTp2FullIntermediate; }
+    if (is_tp2_mlp_down_shard(output_rows, input_rows)) { return kTp2FullIntermediate; }
     return input_rows == 5120 ? input_rows : input_rows * 2;
 }
 #endif

@@ -3,6 +3,7 @@
 #include "core/arena.h"
 #ifdef NINFER_VOLTA_BUILD
 #include "ops/linear/fp8/fp8_prepack_sm70.h"
+#include "ops/linear/w8/w8_volta_qpn_prepacked.h"
 #endif
 #include "ops/op_tester.h"
 
@@ -321,6 +322,20 @@ int run_shape(std::string_view label, ActivationCompute activation_compute,
         ops::detail::fp8_prepack_qpn_sm70(weight);
     }
 #endif
+    if (shape.prepack_w8) {
+#if defined(NINFER_VOLTA_BUILD) && !defined(NINFER_ADA_BUILD)
+        if (weight.qtype != QType::W8G32_F16S) {
+            throw std::invalid_argument("linear test: prepack_w8 requires a W8G32_F16S weight");
+        }
+        ops::detail::w8_prepacked_reserve(shape.n, shape.k);
+        ops::detail::w8_prepack_qpn_sm70(weight);
+        if (weight.layout != QuantLayout::VoltaQpnPrepacked) {
+            throw std::logic_error("linear test: W8 prepack did not mark the weight as prepacked");
+        }
+#else
+        throw std::invalid_argument("linear test: prepack_w8 exists on the V100 (sm_70) build only");
+#endif
+    }
     std::vector<std::uint8_t> weight_before(host_weight.payload.size());
     device_weight.copy_to_host(weight_before.data(), device_weight.bytes);
 

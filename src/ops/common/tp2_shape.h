@@ -13,7 +13,20 @@
 namespace ninfer::ops::detail {
 
 inline constexpr std::int32_t kTp2FullIntermediate = 17408;
+inline constexpr std::int32_t kTp2EvenIntermediate = kTp2FullIntermediate / 2;
 inline constexpr std::int32_t kTp2Intermediate     = NINFER_TP2_INTERMEDIATE;
+
+// MLP shard shapes a TP2 build serves: its own width, and always the even split (the original TP2 contract,
+// still used by the MTP layer of even-split artifacts and by the shape-generic tests).
+inline constexpr bool is_tp2_mlp_shard_width(std::int32_t width) {
+    return width == kTp2EvenIntermediate || width == kTp2Intermediate;
+}
+inline constexpr bool is_tp2_mlp_gate_up_shard(std::int32_t n, std::int32_t k) {
+    return k == 5120 && n % 2 == 0 && is_tp2_mlp_shard_width(n / 2);
+}
+inline constexpr bool is_tp2_mlp_down_shard(std::int32_t n, std::int32_t k) {
+    return n == 5120 && is_tp2_mlp_shard_width(k);
+}
 
 // Multiple of 256: an 8-bit (W8G32) down projection has K = this width, and the Ampere W8 MMA stages eight
 // group scales per row with one 16-byte cp.async, so every row of the scale plane (K/32 * 2 bytes) must stay
