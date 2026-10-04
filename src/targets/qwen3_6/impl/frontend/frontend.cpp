@@ -25,6 +25,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <cstdlib>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -880,8 +881,17 @@ public:
         if (options.max_context == 0) {
             throw std::invalid_argument("frontend max_context must be nonzero");
         }
+        // NINFER_MAX_PROMPT_VISION_TOKENS raises the aggregate Vision-token budget of one request (default
+        // 32768, about 10 phone photos). Host-side only: the GPU Vision workspace is sized per item.
+        std::uint64_t prompt_vision_tokens = kMaximumPromptVisionTokens;
+        if (const char* v = std::getenv("NINFER_MAX_PROMPT_VISION_TOKENS"); v && *v) {
+            prompt_vision_tokens = std::strtoull(v, nullptr, 10);
+            if (prompt_vision_tokens == 0) {
+                throw std::invalid_argument("NINFER_MAX_PROMPT_VISION_TOKENS must be positive");
+            }
+        }
         const std::uint64_t vision_tokens =
-            std::min<std::uint64_t>(options.max_context, kMaximumPromptVisionTokens);
+            std::min<std::uint64_t>(options.max_context, prompt_vision_tokens);
         processor.max_vision_tokens = vision_tokens;
         processor.max_raw_patches   = vision_tokens * kRawPatchesPerVisionToken;
         if (vision_enabled) {
