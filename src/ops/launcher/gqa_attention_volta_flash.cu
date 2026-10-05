@@ -102,21 +102,36 @@ constexpr int round_up_keys(int n) { return ((n + kKeyPad - 1) / kKeyPad) * kKey
 // On Volta (and on the Turing-class path of the sm_89 build) the vendored kernel accumulates P*V in FP16 registers
 // (T_C_VKQ is half2: an FP32 accumulator does not fit the registers at DV = 256), so its error grows with the keys one
 // block sums before the stream-K fixup combines the partials in FP32. Capping the keys per block bounds that FP16 run.
-// NINFER_VOLTA_FLASH_SPLIT_KEYS: maximum keys per block (0 = the launch's natural stream-K split).
+// NINFER_VOLTA_FLASH_SPLIT_KEYS: maximum keys per block (default 512; 0 = the port's natural stream-K split). The cap applies only
+// to Q-blocks narrower than kVoltaFlashMinimumWidth (17-63 tokens: the reads moved onto this kernel from the exact
+// prompt route); wider prompts keep the port's split, so their speed and workspace are unchanged, unless
+// NINFER_VOLTA_FLASH_SPLIT_WIDE=1 extends the cap to them too.
+bool flash_split_wide() {
+    static const bool value = [] {
+        const char* env = std::getenv("NINFER_VOLTA_FLASH_SPLIT_WIDE");
+        return env != nullptr && env[0] == '1';
+    }();
+    return value;
+}
+
+// Default 512 (A/B 2026-10-05, TP2 V100 + 4090, 262k, Uncensored): rel_l2 at 30k int8 keys 0.0032 -> 0.0019 for 17-63
+// token reads; short turns at 123k 0.33 -> 0.34 s, needles 3/3, cold read 55k 1166 -> 1162 t/s, VRAM unchanged.
+// Extending the cap to wide prompts (SPLIT_WIDE=1, 1024) does not fit the 4090: runtime 9.76 GB against 7.57 free.
 int flash_split_keys() {
     static const int value = [] {
+        constexpr int kDefault = 512;
         const char* env = std::getenv("NINFER_VOLTA_FLASH_SPLIT_KEYS");
-        if (env == nullptr || env[0] == 0) return 0;
+        if (env == nullptr || env[0] == 0) return kDefault;
         const long parsed = std::strtol(env, nullptr, 10);
-        return parsed > 0 && parsed <= (1 << 20) ? static_cast<int>(parsed) : 0;
+        return parsed >= 0 && parsed <= (1 << 20) ? static_cast<int>(parsed) : kDefault;
     }();
     return value;
 }
 
 // Blocks per destination tile so that no block sums more than flash_split_keys() keys (1 = no cap).
-int flash_key_splits(int n_kv, int nbatch_fa) {
+int flash_key_splits(int tokens, int n_kv, int nbatch_fa) {
     const int cap = flash_split_keys();
-    if (cap <= 0) return 1;
+    if (cap <= 0 || (tokens >= kVoltaFlashMinimumWidth && !flash_split_wide())) return 1;
     const int tiles_kv  = (n_kv + nbatch_fa - 1) / nbatch_fa;
     const int cap_tiles = std::max(1, cap / nbatch_fa);
     return (tiles_kv + cap_tiles - 1) / cap_tiles;
@@ -439,7 +454,7 @@ void launch_flash_block(const float* q_f32, const half* k_f16, const half* v_f16
     const int loss    = rounded > 0 ? 100 * (raw - rounded) / raw : 100;
     int nblocks       = loss <= 5 ? rounded : raw;
     // Key cap: a whole number of blocks per destination tile, so the uniform fixup combines them in FP32.
-    const int splits = flash_key_splits(n_kv, c.nbatch_fa);
+    const int splits = flash_key_splits(tokens, n_kv, c.nbatch_fa);
     if (splits > 1 && nblocks < splits * ntiles_dst) { nblocks = splits * ntiles_dst; }
 
     const dim3 block_dim(WARP_SIZE, c.nwarps, 1);
@@ -501,7 +516,7 @@ std::size_t meta_elements_impl(std::int32_t tokens, std::int32_t n_kv) {
     const int ntiles_dst = ntiles_x * ((P::kGroup + P::kNcols2 - 1) / P::kNcols2) * P::kKVHeads;
     const int max_blocks = c.blocks_per_sm * c.nsm;
     // Upper bound: the launch never uses more blocks than this.
-    const int nblocks = std::max({max_blocks, ntiles_dst, flash_key_splits(round_up_keys(n_kv), c.nbatch_fa) * ntiles_dst});
+    const int nblocks = std::max({max_blocks, ntiles_dst, flash_key_splits(tokens, round_up_keys(n_kv), c.nbatch_fa) * ntiles_dst});
     return static_cast<std::size_t>(nblocks) * P::kNcols * (2 + kDV / 2);
 }
 

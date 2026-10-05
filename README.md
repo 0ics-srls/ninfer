@@ -34,7 +34,7 @@ A visual summary with comparisons against other home setups is in [`v100-4090/do
 3. [Operating system and NVIDIA driver](#3-operating-system-and-nvidia-driver)
 4. [Power limits and fans](#4-power-limits-and-fans)
 5. [Docker and the build images](#5-docker-and-the-build-images)
-6. [Build the engine](#6-build-the-engine)
+6. [Build the engine](#6-build-the-engine) · [6.1 Test](#61-test-the-engine-and-the-tools)
 7. [Prepare the weights](#7-prepare-the-weights)
 8. [Start the server and verify it](#8-start-the-server-and-verify-it)
 9. [Use it from a coding agent (llama-swap + OpenCode)](#9-use-it-from-a-coding-agent-llama-swap--opencode)
@@ -251,6 +251,33 @@ The MLP width of each rank is a **compile-time constant** and must match the wei
 ls -la build-v100/apps/ninfer-serve build-ada-volta/apps/ninfer-serve    # both exist
 ```
 
+### 6.1 Test the engine and the tools
+
+Every change we made to the engine and to the Python tools has tests in the original NInfer suite (ctest for the
+C++/CUDA code, pytest for the tools), next to the upstream ones. The C++ suite runs on the card of each rank, because
+the same kernels must be right on sm_70 and on sm_89:
+
+```bash
+TESTS=1 v100-4090/scripts/build.sh both                      # builds the suite too (KEEP_GOING=1 shows every error)
+docker build -f v100-4090/docker/Dockerfile.tools -t ninfer-v100-4090/tools v100-4090/docker
+v100-4090/scripts/test.sh v100                               # ctest on the Tesla V100
+v100-4090/scripts/test.sh 4090                               # ctest on the RTX 4090
+v100-4090/scripts/test.sh python                             # pytest of the tools, CPU only
+v100-4090/scripts/test.sh v100 -R softmax_attention          # extra arguments go to ctest / pytest
+```
+
+Tests that need a real artifact or the official Qwen frontend files report "skipped" without them. What covers our
+changes:
+
+| test | what it protects |
+|---|---|
+| `ninfer_tp2_wire8_test` | 8-bit wire: codes, scales and the combine bit for bit against a host oracle, on both cards |
+| `ninfer_linear_w8_a16_test` + `_tp2_mlp_*_off` | W8 MLP at the TP2 rank shapes, with and without KB 2 / CUTLASS |
+| `ninfer_softmax_attention_*` (`tp2_rank`, `packed_vision0/1`) | attention at 30-40k keys, the switches still selectable, vision attention modes |
+| `ninfer_qwen3_6_frontend_test` | vision budget variable, v3 chat-template pairing |
+| `ninfer_artifact_reader_test` + `tests/artifact/test_v3.py` | v3 reader, C++ and Python on one shared fixture |
+| `tests/tp2/` | sharder (every format, uneven cuts, Q8 MLP bit for bit), GGUF patcher, TP2 proxy |
+
 ---
 
 ## 7. Prepare the weights
@@ -376,6 +403,7 @@ commits in [`v100-4090/docs/engine-changes.md`](v100-4090/docs/engine-changes.md
 | MTP with 4 drafts and a light draft head | code 87 → 305 t/s |
 | prefill on tensor cores (CUTLASS 8-bit MLP, flash attention for Volta) | 1,030 t/s at 65k (llama.cpp: 560–730) |
 | short reads (17–63 new tokens) on the fast kernel | first token 2–6 s → 0.3 s |
+| on those reads, at most 512 keys per FP16 accumulation (`NINFER_VOLTA_FLASH_SPLIT_KEYS`) | attention error at 30k keys 0.0032 → 0.0019, same speed |
 | proxy closes the response at once (was on a 2 s grid) | −2 s per turn |
 | 8-bit wire between the cards during prefill (`NINFER_TP_WIRE8`) | prefill +10% (1,056 → 1,163 t/s at 55k) |
 | V100 GEMV at smaller K blocks for T ≤ 8 (`NINFER_SM70_W8_KB2`) | generation +4.6% |

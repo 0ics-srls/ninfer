@@ -298,8 +298,9 @@ if(NINFER_VOLTA_PATH)
       SKIP_RETURN_CODE 77 ENVIRONMENT "NINFER_VISION_ATTN=${mode}")
   endforeach()
   # TP2 rank causal attention at long context: the one-CTA small-T kernel (NINFER_SM70_ATTN_V2D=0) and the old
-  # 64-token flash threshold remain selectable, so they stay tested.
-  foreach(variant "NINFER_SM70_ATTN_V2D=0" "NINFER_VOLTA_FLASH_MIN_WIDTH=64")
+  # 64-token flash threshold remain selectable, so they stay tested; SPLIT_WIDE=1 extends the flash key cap to 64+ tokens.
+  foreach(variant "NINFER_SM70_ATTN_V2D=0" "NINFER_VOLTA_FLASH_MIN_WIDTH=64"
+          "NINFER_VOLTA_FLASH_SPLIT_WIDE=1")
     string(REGEX REPLACE "^NINFER_([A-Z0-9_]+)=([0-9]+)$" "\\1_\\2" suffix "${variant}")
     string(TOLOWER "${suffix}" suffix)
     add_test(NAME ninfer_softmax_attention_tp2_rank_${suffix}_test

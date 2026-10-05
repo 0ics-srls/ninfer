@@ -41,6 +41,7 @@ code path for sm_89 (`-DNINFER_VOLTA_PATH=ON`) and then replaces individual kern
 | `a973fcc3` | small-T int8 attention: splits rounded up to whole waves | |
 | `7934b9f6` | small-T int8 attention with two CTAs per SM (v2d) — `NINFER_SM70_ATTN_V2D=0` disables | 400 → 470–480 GB/s, +3% at 80–180k |
 | `1ea54b67` | flash route from 17 query tokens (was 64): short follow-up turns no longer hit the scalar prompt kernel — `NINFER_VOLTA_FLASH_MIN_WIDTH=64` restores | first token 2–6 s → 0.3 s at 120–200k |
+| (this branch) | the vendored llama.cpp flash kernel accumulates P·V in FP16 on Volta (no room for FP32 registers at head size 256), so its error grows with the keys one block sums. For 17–63-token reads each stream-K block now sums at most 512 keys and the partials are combined in FP32 — `NINFER_VOLTA_FLASH_SPLIT_KEYS=0` restores, `=N` sets the cap; `NINFER_VOLTA_FLASH_SPLIT_WIDE=1` extends it to wide prompts, which does not fit the 4090 at 262k | rel_l2 at 30k int8 keys 0.0032 → 0.0019 (exact routes: 0.0017); short turns 0.33 → 0.34 s, needles 3/3, cold read 1,166 → 1,162 t/s, same VRAM |
 
 ## Communication between the cards
 
