@@ -266,8 +266,10 @@ v100-4090/scripts/test.sh python                             # pytest of the too
 v100-4090/scripts/test.sh v100 -R softmax_attention          # extra arguments go to ctest / pytest
 ```
 
-Tests that need a real artifact or the official Qwen frontend files report "skipped" without them. What covers our
-changes:
+Tests that need a real artifact or the official Qwen frontend files report "skipped" without them. The tests are
+proven to fail when the code they protect is broken: `v100-4090/scripts/mutate-cpp.py` (8 mutations of the engine, on
+the V100) and `v100-4090/scripts/mutate-py.sh` (13 mutations of the tools) must report every mutation RED.
+What covers our changes:
 
 | test | what it protects |
 |---|---|
@@ -404,6 +406,7 @@ commits in [`v100-4090/docs/engine-changes.md`](v100-4090/docs/engine-changes.md
 | prefill on tensor cores (CUTLASS 8-bit MLP, flash attention for Volta) | 1,030 t/s at 65k (llama.cpp: 560–730) |
 | short reads (17–63 new tokens) on the fast kernel | first token 2–6 s → 0.3 s |
 | on those reads, at most 512 keys per FP16 accumulation (`NINFER_VOLTA_FLASH_SPLIT_KEYS`) | attention error at 30k keys 0.0032 → 0.0019, same speed |
+| GDN gates from the FP32-normalized input again (upstream's fused kernel, lost in the V100 port; `NINFER_GDN_NORM_FUSED`) | inherited red test green, same speed |
 | proxy closes the response at once (was on a 2 s grid) | −2 s per turn |
 | 8-bit wire between the cards during prefill (`NINFER_TP_WIRE8`) | prefill +10% (1,056 → 1,163 t/s at 55k) |
 | V100 GEMV at smaller K blocks for T ≤ 8 (`NINFER_SM70_W8_KB2`) | generation +4.6% |

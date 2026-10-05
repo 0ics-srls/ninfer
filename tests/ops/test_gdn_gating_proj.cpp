@@ -27,6 +27,9 @@ struct Geometry {
 constexpr Geometry kQwen27{"qwen3_6_27b", 5120, 48, false};
 constexpr Geometry kQwen38Parent{"qwen3_8_27b_parent", 5120, 48, true};
 constexpr Geometry kQwen35{"qwen3_6_35b_a3b", 2048, 32, true};
+#ifdef NINFER_VOLTA_BUILD
+constexpr Geometry kQwen38Tp2Rank{"qwen3_8_27b_tp2_rank", 5120, 24, true};
+#endif
 
 constexpr ReductionCriterion kGdnProjectionFp32{/*relative_l2=*/1.4e-6,
                                                 /*gross_absolute=*/5.0e-7,
@@ -510,6 +513,15 @@ int main() {
     for (int mode : {1, 2, 3, 4})
         failures +=
             run_norm_projection_case(kQwen38Parent, 16, 0x5800u + mode, norm_execution, true, mode);
+#ifdef NINFER_VOLTA_BUILD
+    // TP2 rank shard (24 heads): the same fused route below 43 tokens, Composed above, same oracle.
+    for (int tokens : {1, 2, 5, 8, 15, 16, 29, 42, 43, 64})
+        failures += run_norm_projection_case(kQwen38Tp2Rank, tokens, 0x5900u + tokens, norm_execution,
+                                             tokens == 5 || tokens == 42);
+    for (int mode : {1, 2, 3, 4})
+        failures +=
+            run_norm_projection_case(kQwen38Tp2Rank, 16, 0x5a00u + mode, norm_execution, true, mode);
+#endif
     failures += run_norm_projection_case(kQwen35, 1, 0x4001u, norm_execution);
     failures += run_norm_projection_case(kQwen35, 16, 0x4010u, norm_execution);
     failures += run_norm_projection_case(kQwen35, 17, 0x4011u, norm_execution);

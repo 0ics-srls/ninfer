@@ -9,6 +9,13 @@
 
 namespace ninfer::ops::detail {
 
+// Fused RMSNorm + GDN controls for the 27B geometry (5120 inputs; 48 heads, or 24 on a TP2 rank): the a/b dots read the
+// FP32-normalized input, h is rounded once from it.
+void bf16_gdn_norm_gating_proj_27_launch(const Tensor& x, const Tensor& norm_weight, float eps,
+                                         Tensor& h, const Weight& a_weight, const Weight& b_weight,
+                                         const Tensor& alog, const Tensor& bias, Tensor& g,
+                                         Tensor& beta, cudaStream_t stream);
+
 enum class Bf16GdnGatingTokenVariant {
     None,
     Full,
